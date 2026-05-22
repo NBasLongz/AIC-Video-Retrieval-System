@@ -17,6 +17,9 @@ export function createResultCard(item) {
   card.dataset.fps = item.fps || 25;
 
   const mode = appState.mode;
+  const sourceBadges = renderSourceBadges(item);
+  const contextText = item.ocr_text || item.transcript_text || item.caption_text || item.text || '';
+  const fusionScore = Number(item.fusion_score || 0);
   
   if (mode === 'visual') {
     // Visual search mode
@@ -24,7 +27,7 @@ export function createResultCard(item) {
     const frameNumber = item.frame_number || item.keyframe_index || 0;
     
     // Công thức: timeMs = (frame / fps) × 1000
-    const timeSeconds = frameNumber / fps;
+    const timeSeconds = Number(item.start_seconds ?? item.start ?? (frameNumber / fps));
     const timeMs = Math.round(timeSeconds * 1000);
     
     card.innerHTML = `
@@ -36,12 +39,15 @@ export function createResultCard(item) {
       >
       <div class="result-info">
         <div class="result-title">${item.video_id}</div>
+        ${sourceBadges}
         <div class="result-meta">
           <span>Frame: ${frameNumber}</span>
           <span>Time: ${formatTime(timeSeconds)}</span>
           <span>FPS: ${fps.toFixed(2)}</span>
         </div>
-        ${item.clip_score ? `<div class="result-score">Score: ${(item.clip_score * 100).toFixed(1)}%</div>` : ''}
+        ${item.clip_score ? `<div class="result-score">Visual: ${Number(item.clip_score).toFixed(4)}</div>` : ''}
+        ${fusionScore ? `<div class="result-score">Fusion: ${fusionScore.toFixed(4)}</div>` : ''}
+        ${contextText ? `<div class="result-transcript">"${truncateText(contextText, 120)}"</div>` : ''}
       </div>
       <button class="submit-card-btn" data-video-id="${item.video_id}" data-time-ms="${timeMs}">
         Submit
@@ -62,11 +68,13 @@ export function createResultCard(item) {
       >
       <div class="result-info">
         <div class="result-title">${item.video_id}</div>
+        ${sourceBadges}
         <div class="result-meta">
           <span>Time: ${formatTime(startSeconds)}</span>
           <span>FPS: ${fps.toFixed(2)}</span>
         </div>
-        ${item.transcript_text ? `<div class="result-transcript">"${truncateText(item.transcript_text, 100)}"</div>` : ''}
+        ${fusionScore ? `<div class="result-score">Fusion: ${fusionScore.toFixed(4)}</div>` : ''}
+        ${contextText ? `<div class="result-transcript">"${truncateText(contextText, 120)}"</div>` : ''}
       </div>
       <button class="submit-card-btn" data-video-id="${item.video_id}" data-time-ms="${timeMs}">
         Submit
@@ -75,6 +83,20 @@ export function createResultCard(item) {
   }
 
   return card;
+}
+
+function renderSourceBadges(item) {
+  const sources = Array.isArray(item.sources) && item.sources.length
+    ? item.sources
+    : [item.source_type || item.doc_type].filter(Boolean);
+
+  if (!sources.length) return '';
+
+  return `
+    <div class="source-badges">
+      ${sources.map((source) => `<span class="source-badge">${source}</span>`).join('')}
+    </div>
+  `;
 }
 
 /**
