@@ -2,7 +2,7 @@
 
 Tài liệu này giải thích cách xây hệ thống truy xuất video đa phương thức cho AI Challenge theo hướng **nhanh, dễ debug, chính xác dần theo từng tầng**. Mục tiêu không phải nhồi một model thật lớn vào mọi thứ, mà là thiết kế pipeline biết kết hợp nhiều tín hiệu: hình ảnh, chữ trong frame, lời thoại, caption/ngữ cảnh và metadata thời gian.
 
-Repo hiện tại đã có baseline tốt: Flask backend, Milvus vector search, Elasticsearch transcript search, OpenCLIP embedding, Whisper ASR, keyframe extraction, giao diện web xem video và submit frame. Bản README này trình bày lại tư duy, luồng xử lý, công nghệ nên dùng và cách nâng cấp để thi đấu.
+Repo hiện tại đã được nâng theo hướng thi đấu: Flask backend làm API, Milvus cho dense vector search, Elasticsearch cho OCR/transcript/caption search, hybrid fusion bằng RRF, rerank top candidates, validate số chiều embedding, Whisper ASR, keyframe extraction, OCR/caption ingest và frontend React/Vite riêng để xem, pin, so sánh lân cận và submit frame.
 
 ## Ý Tưởng Cốt Lõi
 
@@ -68,22 +68,21 @@ flowchart LR
 | --- | --- | --- |
 | Flask API | [backend/app.py](backend/app.py) | Đã có |
 | Search engine | [backend/retrieval_system.py](backend/retrieval_system.py) | Đã có visual + transcript |
-| Config | [backend/config.py](backend/config.py) | Đã có, còn hardcode |
+| Config | [backend/config.py](backend/config.py) | Đọc từ `.env`/environment variables |
 | Ingest Milvus/ES | [backend/ingest_data.py](backend/ingest_data.py) | Đã có |
 | Keyframe extraction | [scripts/extract_keyframes.py](scripts/extract_keyframes.py) | Đã có |
 | CLIP embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | Đã có baseline |
 | Whisper transcript | [scripts/extract_transcripts.py](scripts/extract_transcripts.py) | Đã có |
-| Web UI | [templates/index.html](templates/index.html), [static/js](static/js) | Đã có |
+| Web UI | [frontend](frontend) | React + Vite + TypeScript |
 | Docker DB | [docker-compose.yml](docker-compose.yml) | Milvus + Elasticsearch |
 
-Điểm cần nâng cấp:
+Điểm đã nâng cấp và cần tiếp tục benchmark:
 
 - Visual model hiện là `OpenCLIP ViT-B-32`, chỉ nên xem là baseline.
-- OCR chưa được nối vào search chính.
-- Fusion hiện còn đơn giản, chưa có RRF/hybrid đầy đủ.
-- Chưa có reranker.
-- Backend/model serving chưa container hóa GPU.
-- Config evaluation/server/model nên chuyển sang `.env`.
+- OCR/transcript/caption đã có nhánh search riêng, cần benchmark trọng số theo từng bộ video.
+- Fusion đã có RRF/hybrid, nhưng nên đo `nDCG@10`, `MRR@10`, `Recall@50` và latency theo từng tầng.
+- Reranker đã có hook `rerank_top_k`, cần thử MiniLM/DeBERTa reranker và bật/tắt theo toggle frontend.
+- Backend/model serving nên tiếp tục container hóa GPU nếu chuyển sang SigLIP2, jina-clip-v2, PaddleOCR hoặc faster-whisper.
 
 ## Luồng Xử Lý Offline
 
@@ -533,6 +532,360 @@ Mục tiêu: đưa đáp án đúng lên top 1/top 5.
 
 Mục tiêu: giảm latency và dễ deploy khi thi.
 
+## Roadmap UI Và Prototype Tiếp Theo
+
+Phần này ghi lại các ý tưởng nên đưa vào giao diện mới. Mục tiêu là làm UI không chỉ đẹp hơn, mà giúp thao tác thi AIC nhanh hơn: tìm, so sánh, ghim, kiểm tra frame lân cận và submit ít sai hơn.
+
+### Nhóm Chức Năng Nên Làm Sớm
+
+#### 1. OCR hint riêng
+
+Dùng khi query chính mô tả cảnh, nhưng muốn ép hệ thống tìm thêm chữ cụ thể trong frame.
+
+Ví dụ:
+
+```text
+Query chính: người đứng gần xe đỏ
+OCR hint: biển hiệu màu xanh / chữ Viettel / số 52
+```
+
+Backend nên gửi:
+
+```json
+{
+  "description": "người đứng gần xe đỏ",
+  "ocr": "Viettel số 52"
+}
+```
+
+Tác dụng:
+
+- Visual search vẫn tập trung vào cảnh.
+- OCR search tập trung vào chữ.
+- Fusion/RRF gộp cả hai, tránh query quá dài làm visual embedding bị nhiễu.
+
+#### 2. Transcript hint riêng
+
+Dùng khi video có lời thoại/phụ đề, hoặc query có cụm nghe được trong audio.
+
+Ví dụ:
+
+```text
+Query chính: cảnh họp báo
+Transcript hint: chúng tôi sẽ triển khai trong tuần tới
+```
+
+Backend nên gửi:
+
+```json
+{
+  "description": "cảnh họp báo",
+  "transcript": "chúng tôi sẽ triển khai trong tuần tới"
+}
+```
+
+Tác dụng:
+
+- Không nhồi lời thoại vào visual query.
+- Transcript search giúp khóa đúng video/timestamp.
+- Rất hữu ích khi hình ảnh nhiều cảnh giống nhau nhưng lời thoại khác nhau.
+
+#### 3. Rerank Top-K toggle
+
+Search nhanh bằng Milvus/Elasticsearch trước, sau đó chỉ rerank top candidates.
+
+Gợi ý UI:
+
+```text
+[ ] Rerank top 20
+[x] Rerank top 50
+[ ] Rerank top 100
+```
+
+Gợi ý backend:
+
+```json
+{
+  "description": "...",
+  "rerank_top_k": 50
+}
+```
+
+Tác dụng:
+
+- Tắt rerank khi cần tốc độ.
+- Bật rerank khi query khó hoặc kết quả top đầu chưa chắc.
+- Giữ latency trong mức kiểm soát.
+
+#### 4. Neighbor expansion
+
+Sau khi tìm được top frame, tự thêm hoặc hiển thị frame lân cận:
+
+```text
+frame - 5s
+frame - 3s
+frame
+frame + 3s
+frame + 5s
+```
+
+Lý do:
+
+- Đáp án AIC thường không nằm đúng frame được search ra.
+- Keyframe có thể chỉ gần đúng, còn frame submit cần lệch vài giây.
+- Tăng khả năng tìm đúng timestamp mà không phải kéo video thủ công.
+
+Nên triển khai 2 lớp:
+
+- Backend có thể trả thêm `nearby_candidates`.
+- Modal UI hiển thị nearby frames để nhảy nhanh.
+
+#### 5. Confidence explanation
+
+Mỗi card nên có breakdown nhỏ:
+
+```text
+Visual: 0.337
+OCR rank: 4
+Transcript rank: 12
+Fusion: 0.048
+Rerank: 2.91
+```
+
+Tác dụng:
+
+- Biết result mạnh vì hình, vì chữ hay vì transcript.
+- Debug retrieval nhanh hơn.
+- Giúp quyết định nên sửa query theo hướng visual/OCR/transcript.
+
+Backend hiện đã có các field có thể dùng:
+
+```text
+clip_score
+source_scores
+source_ranks
+fusion_score
+rerank_score
+sources
+```
+
+#### 6. Auto OCR highlight
+
+Nếu OCR match chữ nào, highlight ngay trên card.
+
+Ví dụ:
+
+```text
+OCR: "Viettel"
+OCR: "Bến xe"
+OCR: "Cấm đỗ xe"
+```
+
+Tác dụng:
+
+- Không cần mở video vẫn biết vì sao frame được trả về.
+- Scan kết quả nhanh hơn nhiều với query có chữ/số/biển hiệu.
+
+Gợi ý:
+
+- Highlight substring trong `ocr_text`.
+- Nếu query có `ocr`, ưu tiên highlight theo OCR hint.
+- Nếu OCR text dài, chỉ show đoạn chứa match.
+
+### Nhóm Chức Năng Hỗ Trợ Khi Thi
+
+#### 7. Submit history
+
+Lưu lịch sử đã submit:
+
+```text
+video_id
+frame
+timestamp
+query
+score
+status: success / failed
+```
+
+Tác dụng:
+
+- Tránh submit trùng.
+- Biết frame nào đã thử.
+- Khi submit fail vẫn giữ lại candidate để chỉnh timestamp.
+
+Gợi ý lưu:
+
+- Giai đoạn đầu: `localStorage`.
+- Sau đó: backend SQLite/JSONL để không mất lịch sử khi refresh.
+
+#### 8. Shortlist / Pin frame
+
+Ghim những frame nghi ngờ đúng vào một thanh riêng để so sánh hoặc submit sau.
+
+Tác dụng:
+
+- Top 1 chưa chắc đúng, nhưng top 3-5 thường có vài frame tiềm năng.
+- Khi query khó, người dùng cần gom candidate trước khi quyết định.
+
+Gợi ý UI:
+
+```text
+[Pin] trên mỗi result card
+Pinned strip dưới/top màn hình
+Click pinned item -> mở modal đúng timestamp
+```
+
+#### 9. Compare mode
+
+Cho phép pin 2-4 frame rồi mở so sánh cùng lúc.
+
+Tác dụng:
+
+- Hữu ích khi nhiều frame giống nhau nhưng khác thời điểm.
+- So sánh biển hiệu, background, nhân vật, camera angle nhanh hơn.
+
+Nên làm sau khi đã có Shortlist/Pin frame.
+
+#### 10. Nearby frames trong modal
+
+Khi mở một frame, modal hiện các frame lân cận cùng video để nhảy nhanh qua các timestamp gần đó.
+
+Ví dụ:
+
+```text
+-5s  -3s  current  +3s  +5s
+```
+
+Tác dụng:
+
+- Cực cần cho AIC vì search thường ra gần đúng.
+- Người dùng không phải kéo timeline thủ công.
+- Kết hợp tốt với frame-step hiện có.
+
+#### 11. Hotkey strip
+
+Thêm gợi ý phím tắt:
+
+```text
+Enter: Search
+Space: Play/Pause
+←/→: Step frame
+A/D: Nearby prev/next
+P: Pin
+S: Submit
+Esc: Close modal
+```
+
+Giai đoạn prototype có thể chỉ hiển thị strip. Khi code thật, implement bằng `keydown`.
+
+#### 12. Query decomposition
+
+Backend tự tách query dài thành:
+
+```text
+visual_query
+ocr_query
+transcript_query
+negative_query
+```
+
+Ví dụ:
+
+```text
+Input:
+người đàn ông mặc áo trắng đứng trước cửa hàng có chữ pharmacy
+
+visual_query:
+man wearing white shirt standing in front of a store
+
+ocr_query:
+pharmacy
+```
+
+Tác dụng:
+
+- Tăng độ chính xác vì mỗi modality nhận đúng loại thông tin.
+- Visual embedding không bị nhiễu bởi text cụ thể.
+- OCR search không bị nhiễu bởi mô tả cảnh.
+
+Nên triển khai theo 2 giai đoạn:
+
+1. Rule-based:
+
+```text
+"có chữ X" -> ocr_query
+"biển hiệu X" -> ocr_query
+"nói rằng X" -> transcript_query
+"không có X" -> negative_query
+phần còn lại -> visual_query
+```
+
+2. LLM/local model:
+
+```text
+Input query -> structured JSON query plan
+```
+
+### Payload Search Đề Xuất Cho UI Mới
+
+UI mới nên gửi một payload giàu thông tin hơn:
+
+```json
+{
+  "description": "người đứng gần xe đỏ",
+  "ocr": "Viettel số 52",
+  "transcript": "đang triển khai trong tuần tới",
+  "negative": "không phải xe máy",
+  "fusion": "rrf",
+  "rerank_top_k": 50,
+  "neighbor_seconds": [-5, -3, 0, 3, 5],
+  "explain": true
+}
+```
+
+Backend hiện đã hiểu tốt các field:
+
+```text
+description
+ocr
+transcript
+audio
+caption
+fusion
+```
+
+Các field nên thêm tiếp:
+
+```text
+negative
+rerank_top_k
+neighbor_seconds
+explain
+```
+
+### Thứ Tự Ưu Tiên Cho Giao Diện Mới
+
+Nên làm theo thứ tự:
+
+1. OCR hint riêng.
+2. Transcript hint riêng.
+3. Confidence explanation.
+4. Auto OCR highlight.
+5. Shortlist / Pin frame.
+6. Nearby frames trong modal.
+7. Submit history.
+8. Rerank Top-K toggle.
+9. Hotkey strip.
+10. Compare mode.
+11. Query decomposition rule-based.
+12. Query decomposition bằng LLM/local model.
+
+Nếu cần bản tối thiểu để thi nhanh:
+
+```text
+OCR hint + Transcript hint + Pin frame + Nearby frames + Confidence explanation
+```
+
 ## Docker Và GPU
 
 Hiện repo có:
@@ -721,4 +1074,3 @@ Nếu kết quả không tốt, kiểm tra theo thứ tự:
 - Docker GPU support: https://docs.docker.com/compose/how-tos/gpu-support/
 - Triton dynamic batching: https://docs.nvidia.com/deeplearning/triton-inference-server/
 - BGE reranker v2: https://bge-model.com/bge/bge_reranker_v2.html
-

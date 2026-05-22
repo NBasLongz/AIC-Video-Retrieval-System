@@ -6,9 +6,7 @@ import traceback
 import requests
 from flask import (
     Flask,
-    Response,
     jsonify,
-    render_template,
     request,
     send_from_directory,
 )
@@ -40,6 +38,7 @@ if sys.platform == 'win32':
 
 # Flask app với template/static paths từ thư mục gốc
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND_DIST = os.path.join(ROOT_DIR, "frontend", "dist")
 app = Flask(__name__, 
             template_folder=os.path.join(ROOT_DIR, 'templates'),
             static_folder=os.path.join(ROOT_DIR, 'static'))
@@ -73,12 +72,17 @@ except Exception as e:
 
 @app.route("/")
 def home():
-    return render_template("index.html")
+    index_path = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_path):
+        return send_from_directory(FRONTEND_DIST, "index.html")
+    return jsonify({
+        "message": "Frontend build not found. Run `cd frontend && npm install && npm run build`, or use Vite dev server on port 5173."
+    }), 200
 
 
-@app.route("/test")
-def test_page():
-    return render_template("test_search.html")
+@app.route("/assets/<path:filename>")
+def frontend_assets(filename):
+    return send_from_directory(os.path.join(FRONTEND_DIST, "assets"), filename)
 
 
 @app.route("/search", methods=["POST"])
@@ -111,6 +115,11 @@ def search_api():
         # Giao các tập kết quả
             results = search_system.intersect(result_sets)
         else:
+            if query_data.get("rerank_top_k") is not None:
+                try:
+                    query_data["rerank_top_k"] = int(query_data["rerank_top_k"])
+                except (TypeError, ValueError):
+                    query_data.pop("rerank_top_k", None)
             results = search_system.hybrid_search(query_data)
 
         for item in results:
@@ -132,7 +141,15 @@ def serve_frame_image(video_id, keyframe_index):
         filename = f"keyframe_{keyframe_index}.webp"
         return send_from_directory(keyframe_dir, filename)
     except FileNotFoundError:
-        return send_from_directory("static", "placeholder.png"), 404
+        return "Keyframe not found", 404
+
+
+@app.route("/frontend/<path:path>")
+def frontend_spa(path):
+    target_path = os.path.join(FRONTEND_DIST, path)
+    if os.path.exists(target_path) and os.path.isfile(target_path):
+        return send_from_directory(FRONTEND_DIST, path)
+    return send_from_directory(FRONTEND_DIST, "index.html")
 
 
 @app.route("/videos/<path:video_id>")

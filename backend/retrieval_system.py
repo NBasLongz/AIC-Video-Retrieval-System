@@ -397,10 +397,16 @@ class VideoRetrievalSystem:
             self._with_video_metadata(item)
             item.setdefault("query_language", query_plan.language_hint)
 
+        rerank_top_k = query_data.get("rerank_top_k", config.RERANK_TOP_K)
+        try:
+            rerank_top_k = max(0, int(rerank_top_k))
+        except (TypeError, ValueError):
+            rerank_top_k = config.RERANK_TOP_K
+
         fused = self.reranker.rerank(
             query_plan.normalized,
             fused,
-            top_k=config.RERANK_TOP_K,
+            top_k=rerank_top_k,
         )
 
         logger.info(
