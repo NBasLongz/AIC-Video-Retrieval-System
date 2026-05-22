@@ -1,553 +1,724 @@
-# 🎥 Video Retrieval System
+# Video Retrieval System for AI Challenge
 
-Hệ thống tìm kiếm và truy xuất video thông minh sử dụng **CLIP embedding** và **Elasticsearch** cho tìm kiếm transcript. Hỗ trợ nộp kết quả lên evaluation server.
+Tài liệu này giải thích cách xây hệ thống truy xuất video đa phương thức cho AI Challenge theo hướng **nhanh, dễ debug, chính xác dần theo từng tầng**. Mục tiêu không phải nhồi một model thật lớn vào mọi thứ, mà là thiết kế pipeline biết kết hợp nhiều tín hiệu: hình ảnh, chữ trong frame, lời thoại, caption/ngữ cảnh và metadata thời gian.
 
----
+Repo hiện tại đã có baseline tốt: Flask backend, Milvus vector search, Elasticsearch transcript search, OpenCLIP embedding, Whisper ASR, keyframe extraction, giao diện web xem video và submit frame. Bản README này trình bày lại tư duy, luồng xử lý, công nghệ nên dùng và cách nâng cấp để thi đấu.
 
-## 📋 Mục Lục
+## Ý Tưởng Cốt Lõi
 
-- [Tổng quan](#tổng-quan)
-- [Kiến trúc hệ thống](#kiến-trúc-hệ-thống)
-- [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
-- [Cài đặt](#cài-đặt)
-- [Cấu hình](#cấu-hình)
-- [Sử dụng](#sử-dụng)
-- [Cấu trúc thư mục](#cấu-trúc-thư-mục)
-- [API Endpoints](#api-endpoints)
-- [Troubleshooting](#troubleshooting)
+Trong video retrieval, không nên phụ thuộc vào một loại score duy nhất.
 
----
+Ví dụ query:
 
-##  Tổng quan
-
-Hệ thống cho phép:
--  **Tìm kiếm video** bằng mô tả văn bản (text query)
--  **Tìm kiếm transcript** trong nội dung video
--  **Auto-extract transcripts** bằng OpenAI Whisper (99 ngôn ngữ)
--  **Xem preview video** khi hover chuột
--  **Điều hướng frame-by-frame** chính xác
--  **Nộp kết quả** lên evaluation server với session ID
--  **Quản lý metadata** video (FPS, duration, keyframes)
-
----
-
-##  Kiến trúc hệ thống
-
-```
-┌─────────────────┐
-│   Web UI        │  ← Flask + Vanilla JavaScript
-│  (templates/)   │
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│   Backend       │
-│   (Flask API)   │  ← app.py, retrieval_system.py
-└────────┬────────┘
-         │
-    ┌────┴────┬─────────────┬──────────────┐
-    ▼         ▼             ▼              ▼
-┌───────┐ ┌────────┐ ┌──────────┐ ┌──────────────┐
-│Milvus │ │Elastic │ │Video     │ │Evaluation    │
-│Vector │ │Search  │ │Storage   │ │Server        │
-│  DB   │ │(Trans) │ │(MP4)     │ │(Submit API)  │
-└───────┘ └────────┘ └──────────┘ └──────────────┘
+```text
+người cầm ô đứng cạnh xe màu đỏ trong trời mưa
 ```
 
-**Công nghệ sử dụng:**
-- Frontend: HTML5, CSS3, Vanilla JavaScript (ES6 modules)
-- Backend: Flask (Python 3.8+)
-- Vector DB: Milvus (image-text embeddings)
-- Text Search: Elasticsearch (transcript + OCR + captions)
-- Search Strategy: Hybrid search (Milvus + ES), dual-query VN + EN, fusion ranking (max-score / RRF), rerank stage-2 (SigLIP2/VLM), score threshold + full ranked results
-- Full Results Output: Trả về toàn bộ keyframes tương đồng (không giới hạn top-K), hỗ trợ pagination/scroll/cursor + lọc theo min_score để tránh quá tải
-- Translation (VI→EN): NLLB-200 distilled (nhanh) hoặc SeamlessM4T v2 (đa năng)
-- Video Processing: OpenCV, FFmpeg
-- Embedding Model: OpenCLIP ViT-B/32 (baseline) → SigLIP2 g/NaFlex hoặc OpenCLIP ViT-H/14 hoặc jina-clip-v2
-- Captioning (optional): VLM (Qwen2-VL / InternVL2 / LLaVA / BLIP) → index ES
-- Transcript Extraction: OpenAI Whisper (ASR đa ngôn ngữ)
-- OCR: PaddleOCR 3.x (PP-OCRv5 / PaddleOCR-VL)
+Một frame đúng có thể được phát hiện nhờ nhiều tín hiệu khác nhau:
 
-**Note**: Cải tiến model và hệ thống nhưng chưa áp dụng nâng cấp.
+- Visual embedding thấy cảnh có người, ô, xe, mưa.
+- OCR thấy chữ trên biển hiệu hoặc phụ đề.
+- Transcript/ASR nghe thấy lời thoại liên quan.
+- Caption/VLM mô tả quan hệ giữa người, vật và bối cảnh.
+- Metadata biết video id, timestamp, keyframe mapping, FPS.
 
-##  Yêu cầu hệ thống
+Vì vậy hệ thống tốt nên có 3 tầng:
 
-### Phần mềm bắt buộc:
-- **Python 3.8+** 
-- **Docker Desktop** (Milvus, Elasticsearch containers)
-- **Git** (để clone repository)
-- **8GB RAM** tối thiểu (khuyến nghị 16GB)
-- **10GB dung lượng** trống (cho models và data)
-
----
-
-##  Cài đặt
-
-### Bước 1: Clone repository
-
-```bash
-git clone <repository-url>
-cd Retrieval_System
+```text
+1. Candidate generation: lấy thật nhanh nhiều ứng viên có khả năng đúng.
+2. Fusion: gộp kết quả từ visual/OCR/transcript/caption.
+3. Reranking: sắp xếp lại top kết quả để đáp án đúng lên cao.
 ```
 
-### Bước 2: Tạo môi trường ảo Python
+## Sơ Đồ Luồng Tổng Quát
 
-**Windows (cmd):**
-```cmd
-python -m venv .venv
-.venv\Scripts\activate
-python -m scripts.run_whisper_pipeline --language vi
+```mermaid
+flowchart LR
+    subgraph OFF["Offline ingestion"]
+        V["Video / Image / Document"] --> KF["Keyframe extraction"]
+        V --> ASR["ASR transcript"]
+        KF --> VIS["Visual embeddings"]
+        KF --> OCR["OCR text"]
+        KF --> CAP["Caption / VLM tags"]
+        KF --> META["Metadata + timestamps"]
+        VIS --> MI["Milvus vector index"]
+        OCR --> ES["Elasticsearch text index"]
+        ASR --> ES
+        CAP --> ES
+        META --> MF["Structured metadata"]
+    end
+
+    subgraph ON["Online retrieval"]
+        Q["Text / Image / Audio query"] --> PRE["Language detect + optional VI-EN translation"]
+        PRE --> QE["Query embeddings"]
+        QE --> DR["Dense visual retrieval"]
+        PRE --> SR["Sparse OCR/transcript retrieval"]
+        DR --> FU["Fusion / RRF"]
+        SR --> FU
+        MF --> FU
+        FU --> RR["Cross-encoder rerank"]
+        RR --> VR["Optional VLM/LLM rerank"]
+        VR --> UI["Result UI + video player + submit"]
+    end
 ```
 
-**Linux/macOS:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+## Repo Hiện Tại Có Gì
 
-python -m backend.app
+| Phần | File chính | Trạng thái |
+| --- | --- | --- |
+| Flask API | [backend/app.py](backend/app.py) | Đã có |
+| Search engine | [backend/retrieval_system.py](backend/retrieval_system.py) | Đã có visual + transcript |
+| Config | [backend/config.py](backend/config.py) | Đã có, còn hardcode |
+| Ingest Milvus/ES | [backend/ingest_data.py](backend/ingest_data.py) | Đã có |
+| Keyframe extraction | [scripts/extract_keyframes.py](scripts/extract_keyframes.py) | Đã có |
+| CLIP embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | Đã có baseline |
+| Whisper transcript | [scripts/extract_transcripts.py](scripts/extract_transcripts.py) | Đã có |
+| Web UI | [templates/index.html](templates/index.html), [static/js](static/js) | Đã có |
+| Docker DB | [docker-compose.yml](docker-compose.yml) | Milvus + Elasticsearch |
+
+Điểm cần nâng cấp:
+
+- Visual model hiện là `OpenCLIP ViT-B-32`, chỉ nên xem là baseline.
+- OCR chưa được nối vào search chính.
+- Fusion hiện còn đơn giản, chưa có RRF/hybrid đầy đủ.
+- Chưa có reranker.
+- Backend/model serving chưa container hóa GPU.
+- Config evaluation/server/model nên chuyển sang `.env`.
+
+## Luồng Xử Lý Offline
+
+Offline ingestion là phần chuẩn bị dữ liệu trước khi thi hoặc trước khi search. Làm tốt phần này thì online search mới nhanh.
+
+### 1. Chuẩn bị video
+
+Đưa video vào:
+
+```text
+data/videos/L01_V001.mp4
+data/videos/L01_V002.mp4
 ```
 
-### Bước 3: Cài đặt dependencies
+Tên file nên là `video_id`, vì toàn bộ hệ thống dùng tên file để map keyframe, transcript, metadata và submit.
 
-```bash
-pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
+### 2. Extract keyframes
+
+```powershell
+python -m scripts.extract_keyframes --method interval --interval 2.0
 ```
 
-### Bước 4: Khởi động Docker services
+Kết quả:
 
-```bash
-docker compose up -d
+```text
+data/keyframes/L01_V001/keyframe_0.webp
+data/keyframes/L01_V001/keyframe_1.webp
+data/keyframes/maps/L01_V001_map.csv
 ```
 
-**Chờ ~2-5 phút** để các containers khởi động hoàn tất. Kiểm tra status:
+File map rất quan trọng:
 
-```bash
-docker compose ps
+```csv
+FrameID,Seconds,OriginalFrame
+0,0.0,0
+1,2.0,50
+2,4.0,100
 ```
 
-Tất cả services phải ở trạng thái **"Up"** hoặc **"healthy"**.
+Nó giúp biết `keyframe_1.webp` tương ứng giây nào và frame gốc nào trong video.
 
-### Bước 5: Setup môi trường
+### 3. Tính visual embeddings
 
-```bash
-python -m scripts.setup_environment --all
+Baseline hiện tại:
+
+```powershell
+python -m scripts.compute_embeddings --batch-size 32 --device cuda
 ```
 
-Lệnh này sẽ:
--  Kiểm tra Python packages
--  Kiểm tra Docker containers
--  Tạo các thư mục cần thiết
--  Download CLIP model weights
+Kết quả:
 
----
-
-##  Cấu hình
-
-### File: `backend/config.py`
-
-Các cấu hình quan trọng:
-
-```python
-# Video & Data Paths
-VIDEOS_DIR = "data/videos"           # Thư mục chứa video MP4
-KEYFRAMES_DIR = "data/keyframes"     # Thư mục keyframes
-TRANSCRIPTS_DIR = "data/transcripts" # Thư mục JSON transcripts
-EMBEDDINGS_DIR = "data/embeddings"   # Vector embeddings
-
-# Database Connections
-MILVUS_HOST = "localhost"
-MILVUS_PORT = "19530"
-ELASTICSEARCH_HOST = "localhost:9200"
-
-# CLIP Model
-CLIP_MODEL = "ViT-B/32"
-CLIP_PRETRAINED = "openai"
-
-# Evaluation Server
-SESSION_ID = "CXTDKFpWUS8QDARbbM6n61yJJ7Yiu9eL"  # Session ID của bạn
-EVALUATION_ID = "76f9d8a8-e30d-4840-9865-a09ad24859a6"
-EVALUATION_SERVER = "http://192.168.20.156:5601"
+```text
+data/embeddings/L01_V001/keyframe_0.pt
+data/embeddings/L01_V001/keyframe_1.pt
 ```
 
-**⚠️ Quan trọng:** 
-- Đổi `SESSION_ID` và `EVALUATION_ID` thành giá trị của bạn
-- Kiểm tra `EVALUATION_SERVER` có đúng IP không
+Model hiện tại là `OpenCLIP ViT-B-32`. Đây là baseline nhanh, nhẹ, dễ chạy. Khi cần tăng accuracy, nên nâng theo thứ tự:
 
----
-
-## 🚀 Sử dụng
-
-### 1. Extract transcripts từ video (Whisper)
-
-**Cách đơn giản nhất:**
-
-```cmd
-python -m scripts.run_whisper_pipeline
+```text
+OpenCLIP ViT-B-32
+-> SigLIP2 base
+-> SigLIP2 so400m
+-> jina-clip-v2 nếu cần multilingual image-text mạnh hơn
 ```
 
-Hoặc dùng batch file (Windows):
+Lưu ý: embedding từ model khác nhau không nên trộn chung một collection nếu chưa lưu `model_name`, `dimension`, `normalized`.
 
-```cmd
-tools\run_whisper.bat
+### 4. Extract transcript bằng ASR
+
+Hiện có:
+
+```powershell
+python -m scripts.run_transcript_pipeline --model large --language vi
 ```
 
-Script này sẽ:
-1.  Extract transcripts từ video bằng Whisper
-2.  Tự động detect ngôn ngữ (hoặc chỉ định cụ thể)
-3.  Lưu transcripts với timestamps chính xác
-4.  Index vào Elasticsearch để search
+Khuyến nghị thi đấu:
 
-**Tùy chọn nâng cao:**
-
-```cmd
-# Chọn model size (tiny/base/small/medium/large)
-python -m scripts.run_whisper_pipeline --model small
-
-# Chỉ định ngôn ngữ (tăng tốc độ và độ chính xác)
-python -m scripts.run_whisper_pipeline --language en
-
-# Test với 1 video
-python -m scripts.extract_transcripts --single-video L01_V001
+```text
+openai-whisper: dễ dùng, baseline ổn
+faster-whisper: nhanh hơn khi chạy GPU, hợp production/competition
+large-v3: ưu tiên accuracy
+medium/small: dùng khi GPU yếu hoặc cần ingest nhanh
 ```
 
- **Chi tiết:** Xem [WHISPER_GUIDE.md](WHISPER_GUIDE.md)
+Kết quả transcript nên có:
 
-### 2. Ingest data (Chỉ chạy 1 lần hoặc khi có video mới)
+```json
+{
+  "video_id": "L01_V001",
+  "language": "vi",
+  "segments": [
+    {
+      "start": 12.3,
+      "end": 15.1,
+      "text": "..."
+    }
+  ]
+}
+```
 
-**Nếu đã có transcripts (CSV hoặc Whisper JSON):**
+### 5. OCR keyframes
 
-```bash
+Đây là phần rất nên thêm cho AI Challenge. Nhiều đáp án nằm trong:
+
+- chữ trên màn hình,
+- biển báo,
+- logo,
+- phụ đề,
+- slide,
+- bảng,
+- tiêu đề chương trình.
+
+Luồng đề xuất:
+
+```text
+keyframe images
+-> PaddleOCR PP-OCRv5
+-> OCR JSON
+-> Elasticsearch text index
+```
+
+Không nên chạy VLM OCR nặng trên toàn bộ keyframe ngay từ đầu. Cách thực dụng:
+
+```text
+PaddleOCR nhẹ chạy toàn bộ corpus
+PaddleOCR-VL hoặc Florence-2 chỉ chạy top candidates khi cần hiểu layout/chữ phức tạp
+```
+
+### 6. Caption hoặc VLM tags
+
+Caption giúp bổ sung ngữ cảnh mà visual embedding đôi khi không biểu diễn rõ.
+
+Ví dụ frame có:
+
+```text
+một người đàn ông mặc áo xanh đang đứng cạnh xe cứu thương
+```
+
+Caption text này có thể index vào Elasticsearch giống transcript/OCR. Tuy nhiên, caption/VLM khá nặng, nên ưu tiên sau OCR và transcript.
+
+### 7. Ingest vào database
+
+```powershell
 python -m backend.ingest_data
 ```
 
-**Quá trình này sẽ:**
-1.  Extract keyframes từ video (mỗi X giây)
-2.  Tính CLIP embeddings cho keyframes
-3.  Index embeddings vào Milvus
-4.  Index transcripts (CSV hoặc JSON) vào Elasticsearch
-5.  Lưu metadata (FPS, duration, frame mapping)
+Hiện script làm 2 việc:
 
-**Thời gian:** ~5-10 phút cho 100 videos (tùy thuộc hardware)
+- Ingest embedding `.pt` vào Milvus collection `video_keyframes`.
+- Ingest transcript JSON/CSV vào Elasticsearch index `video_transcripts`.
 
-**Lưu ý:** Backend tự động hỗ trợ cả hai format transcript:
-- **CSV** (legacy): `Start`, `End`, `Text`
-- **JSON** (Whisper): `video_id`, `language`, `segments[]`
+Sau này nên mở rộng để ingest thêm:
 
- **Muốn bổ sung transcript mới mà vẫn giữ dữ liệu cũ?**
-
-```bash
-python -m backend.ingest_data --append-transcripts
+```text
+OCR text
+caption text
+text dense embedding
+model metadata
+timestamp metadata
 ```
 
-Chế độ này chỉ thêm hoặc cập nhật transcript mới (dựa trên `_id` của Elasticsearch) và không xóa index cũ.
+## Luồng Xử Lý Online Khi User Search
 
-### 3. Chạy web server
+Online retrieval là phần chạy khi người dùng nhập query trên UI.
 
-```bash
+### Bước 1. Nhận query
+
+Ví dụ:
+
+```json
+{
+  "description": "người cầm ô đứng cạnh xe màu đỏ"
+}
+```
+
+Hoặc:
+
+```json
+{
+  "transcript": "hôm nay trời mưa rất lớn"
+}
+```
+
+### Bước 2. Tiền xử lý query
+
+Nên làm:
+
+- detect tiếng Việt/Anh,
+- chuẩn hóa dấu câu/khoảng trắng,
+- optional dịch Việt -> Anh nếu visual model hiểu tiếng Anh tốt hơn,
+- giữ cả query gốc và query dịch.
+
+Ví dụ:
+
+```text
+query_vi = "người cầm ô đứng cạnh xe màu đỏ"
+query_en = "a person holding an umbrella standing next to a red car"
+```
+
+Sau đó search cả hai nếu latency cho phép.
+
+### Bước 3. Dense visual retrieval
+
+Query text được encode thành vector, rồi search Milvus:
+
+```text
+query -> text encoder -> vector -> Milvus -> top 200/500 keyframes
+```
+
+Kết quả gồm:
+
+```json
+{
+  "video_id": "L01_V001",
+  "keyframe_index": 17,
+  "frame_number": 850,
+  "start_seconds": 34.0,
+  "clip_score": 0.337
+}
+```
+
+### Bước 4. Sparse text retrieval
+
+Query cũng search trên Elasticsearch:
+
+```text
+query -> Elasticsearch -> transcript/OCR/caption matches
+```
+
+Text search rất mạnh khi query chứa tên riêng, số, chữ trên màn hình hoặc lời thoại.
+
+### Bước 5. Fusion
+
+Không nên so trực tiếp:
+
+```text
+CLIP score 0.33
+Elasticsearch score 12.5
+OCR score 8.1
+```
+
+Vì mỗi hệ có scale khác nhau. Cách dễ và ổn nhất là dùng RRF:
+
+```text
+rrf_score = sum(1 / (k + rank_i))
+```
+
+Với `k = 60`.
+
+Ví dụ:
+
+```text
+Frame A rank visual = 2, rank OCR = 20
+Frame B rank visual = 10, rank OCR = 1
+```
+
+RRF sẽ gộp theo thứ hạng, không cần ép score về cùng scale.
+
+### Bước 6. Rerank
+
+Sau fusion, lấy top 50 đưa vào reranker:
+
+```text
+query + OCR + transcript + caption + metadata -> reranker -> final ranking
+```
+
+Reranker khuyến nghị:
+
+```text
+BAAI/bge-reranker-v2-m3
+```
+
+Vì model này multilingual, hợp Việt-Anh và nhẹ hơn các reranker LLM lớn.
+
+### Bước 7. UI và submit
+
+Frontend hiển thị result card. Khi click:
+
+- mở video,
+- seek tới `start_seconds`,
+- cho nhảy từng frame,
+- tính `timeMs`,
+- submit lên evaluation server.
+
+Công thức submit:
+
+```text
+currentFrame = floor(currentTime * fps)
+timeMs = round((currentFrame / fps) * 1000)
+```
+
+## Vì Sao Score 0.3x Vẫn Có Thể Là Cao
+
+Score từ CLIP/SigLIP/OpenCLIP không phải phần trăm đúng.
+
+Nó thường là cosine similarity hoặc inner product giữa query vector và image vector. Với CLIP baseline, score đúng có thể chỉ quanh:
+
+```text
+0.20 - 0.25: liên quan nhẹ
+0.25 - 0.32: khá liên quan
+0.32 - 0.40: thường đã rất tốt
+> 0.40: rất mạnh, nhưng không phải query nào cũng có
+```
+
+Vì vậy nếu bạn thấy frame đúng chỉ `0.3x`, đó là bình thường.
+
+Điều quan trọng là **rank tương đối**, không phải raw score tuyệt đối.
+
+Ví dụ tốt:
+
+```text
+Top 1: 0.337
+Top 2: 0.331
+Top 3: 0.329
+Top 50: 0.284
+```
+
+Điểm nhìn thấp nhưng top đầu vẫn có ý nghĩa.
+
+Ví dụ rất mạnh:
+
+```text
+Top 1: 0.337
+Top 2: 0.180
+Top 3: 0.175
+```
+
+Top 1 nổi bật hẳn so với phần còn lại.
+
+Do đó không nên đặt threshold kiểu:
+
+```text
+score > 0.7 mới đúng
+```
+
+Thay vào đó nên đo:
+
+```text
+Recall@50
+MRR@10
+nDCG@10
+rank của đáp án đúng
+```
+
+## Cách Tính Điểm Nên Dùng
+
+### Cách đơn giản nhất: RRF
+
+RRF hợp cho giai đoạn đầu vì không cần normalize score.
+
+```python
+def rrf(rank, k=60):
+    return 1 / (k + rank)
+```
+
+Final:
+
+```text
+final_score = rrf_visual + rrf_ocr + rrf_transcript + metadata_bonus
+```
+
+### Cách weighted nếu đã normalize tốt
+
+```text
+final_score =
+  0.45 * visual_rank_score
++ 0.30 * ocr_rank_score
++ 0.20 * transcript_rank_score
++ 0.05 * metadata_bonus
+```
+
+Gợi ý cho AI Challenge:
+
+- Query mô tả cảnh: tăng visual weight.
+- Query chứa chữ/số/tên riêng: tăng OCR weight.
+- Query giống lời thoại: tăng transcript weight.
+- Query mơ hồ: lấy rộng hơn, rerank mạnh hơn.
+
+## Model Stack Khuyến Nghị
+
+| Tầng | Nên dùng trước | Khi nào dùng |
+| --- | --- | --- |
+| Visual baseline | OpenCLIP ViT-B-32 | Đã có, nhanh, dùng làm baseline |
+| Visual nâng cấp | SigLIP2 base/so400m | Query cảnh tự nhiên, object, relation |
+| Multilingual image-text | jina-clip-v2 | Query Việt-Anh nhiều, cần text-image chung |
+| OCR toàn bộ corpus | PaddleOCR PP-OCRv5 | Nên thêm sớm |
+| OCR/VLM fallback | PaddleOCR-VL hoặc Florence-2 | Dùng top candidates, layout/chữ phức tạp |
+| ASR | faster-whisper large-v3 | Transcript chất lượng cao và nhanh trên GPU |
+| Text embedding | BAAI/bge-m3 | Dense text retrieval đa ngôn ngữ |
+| Reranker | BAAI/bge-reranker-v2-m3 | Rerank top 50 |
+| Serving | ONNX/TensorRT/Triton | Khi cần throughput và batching |
+| Cache | Redis | Cache query embedding, translation, rerank |
+
+## Thứ Tự Làm Khuyến Nghị
+
+Đừng làm tất cả cùng lúc. Với thi đấu, nên đi từng bước:
+
+### Giai đoạn 1: Baseline chạy chắc
+
+1. Chạy Docker Milvus + Elasticsearch.
+2. Extract keyframes.
+3. Compute OpenCLIP embeddings.
+4. Extract transcript.
+5. Ingest Milvus + Elasticsearch.
+6. Search được bằng UI.
+7. Submit đúng `timeMs`.
+
+Mục tiêu: hệ thống không lỗi, search được, submit đúng.
+
+### Giai đoạn 2: Tăng accuracy rẻ nhất
+
+1. Thêm OCR bằng PaddleOCR.
+2. Index OCR text vào Elasticsearch.
+3. Search song song visual + OCR + transcript.
+4. Fusion bằng RRF.
+
+Mục tiêu: tăng recall mạnh, đặc biệt query có chữ trong ảnh.
+
+### Giai đoạn 3: Nâng visual model
+
+1. Thêm adapter để đổi model embedding.
+2. Benchmark OpenCLIP vs SigLIP2 vs jina-clip-v2.
+3. Chọn model theo corpus và GPU.
+
+Mục tiêu: visual retrieval tốt hơn baseline.
+
+### Giai đoạn 4: Rerank
+
+1. Lấy top 50 sau fusion.
+2. Ghép text context:
+
+```text
+video_id, timestamp, OCR, transcript, caption
+```
+
+3. Rerank bằng `bge-reranker-v2-m3`.
+
+Mục tiêu: đưa đáp án đúng lên top 1/top 5.
+
+### Giai đoạn 5: Tối ưu backend
+
+1. Chuyển config sang `.env`.
+2. Thêm Redis cache.
+3. Container hóa backend/worker.
+4. Tối ưu batch inference.
+5. Nếu cần, dùng Triton/ONNX/TensorRT.
+
+Mục tiêu: giảm latency và dễ deploy khi thi.
+
+## Docker Và GPU
+
+Hiện repo có:
+
+```powershell
+docker compose up -d
+```
+
+Services:
+
+- Milvus
+- Etcd
+- MinIO
+- Elasticsearch
+
+Nên thêm sau:
+
+```text
+backend-api
+worker-ingest
+model-embedder
+model-reranker
+redis
+triton optional
+```
+
+Yêu cầu GPU:
+
+```text
+8 GB VRAM: chạy baseline, OCR, embedding vừa phải
+12-16 GB VRAM: SigLIP2/jina-clip-v2 + faster-whisper thoải mái hơn
+24 GB VRAM: reranker/VLM nặng hơn, batch lớn hơn
+```
+
+## Cấu Hình Nên Chuyển Sang .env
+
+Hiện [backend/config.py](backend/config.py) còn hardcode. Nên chuyển dần:
+
+```env
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+ELASTIC_HOST=localhost
+ELASTIC_PORT=9200
+
+VISUAL_MODEL=openclip-vit-b-32
+TEXT_MODEL=BAAI/bge-m3
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+ASR_MODEL=large-v3
+OCR_ENGINE=paddleocr
+
+EVAL_SERVER_URL=http://192.168.20.156:5601
+SESSION_ID=...
+EVALUATION_ID=...
+```
+
+Không nên commit session thật nếu repo public.
+
+## Cách Chạy Hiện Tại
+
+### 1. Cài dependencies
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. Chạy database
+
+```powershell
+docker compose up -d
+```
+
+### 3. Kiểm tra môi trường
+
+```powershell
+python -m scripts.setup_environment --all
+```
+
+### 4. Chuẩn bị dữ liệu
+
+```powershell
+python -m scripts.extract_keyframes --method interval --interval 2.0
+python -m scripts.compute_embeddings --batch-size 32 --device cuda
+python -m scripts.run_transcript_pipeline --model large --language vi
+python -m backend.ingest_data
+```
+
+### 5. Chạy web
+
+```powershell
 python -m backend.app
 ```
 
-Server sẽ chạy tại: **http://localhost:5000**
+Mở:
 
-### 4. Sử dụng giao diện web
-
-1. **Mở trình duyệt:** http://localhost:5000
-2. **Click "Connect"** → Kết nối đến evaluation server (hiển thị session ID)
-3. **Nhập query:** Mô tả video cần tìm (VD: "person walking on the street")
-4. **Click "Search"** → Xem kết quả
-5. **Hover chuột** lên card → Xem video preview
-6. **Click card** → Mở video player modal
-7. **Dùng ◀ ▶** → Điều chỉnh frame chính xác
-8. **Click "SubmitFrame"** → Nộp lên server
-
----
-
-## 📁 Cấu trúc thư mục
-
-```
-Retrieval_System/
-│
-├── backend/                    # Core Python backend
-│   ├── app.py                 # Flask web server (main entry)
-│   ├── retrieval_system.py    # Search engine logic
-│   ├── ingest_data.py         # Data ingestion pipeline
-│   ├── config.py              # Configuration settings
-│   └── submit.py              # Submit API helper
-│
-├── utils/                      # Utility modules
-│   ├── elasticsearch_client.py
-│   ├── text_encoder.py        # CLIP text encoder
-│   └── video_metadata.py      # Video metadata helpers
-│
-├── scripts/                    # Setup & processing scripts
-│   ├── setup_environment.py   # Environment verification
-│   ├── extract_keyframes.py   # Keyframe extraction
-│   └── compute_embeddings.py  # CLIP embedding computation
-│
-├── tools/                      # Optional tools
-│   ├── hls.py                 # HLS streaming converter (unused)
-│   ├── open_clip_torch.py     # CLIP import shim
-│   └── run_ingest.bat         # Windows batch script
-│
-├── templates/                  # HTML templates
-│   └── index.html             # Main web UI
-│
-├── static/                     # Frontend assets
-│   ├── style.css              # Global styles
-│   └── js/
-│       ├── main.js            # Main app logic
-│       ├── video-player.js    # Video modal & controls
-│       ├── results.js         # Search results display
-│       ├── api.js             # API communication
-│       └── elements.js        # DOM element references
-│
-├── data/                       # Data storage (gitignored)
-│   ├── videos/                # MP4 video files
-│   ├── keyframes/             # Extracted keyframes (webp)
-│   │   └── maps/              # Frame→seconds mapping (CSV)
-│   ├── transcripts/           # JSON transcript files
-│   └── embeddings/            # CLIP embeddings (NPZ)
-│
-├── volumes/                    # Docker persistent volumes
-│   ├── milvus/
-│   ├── es_data/
-│   └── mongo_data/
-│
-├── docker-compose.yml          # Docker services definition
-├── requirements.txt            # Python dependencies
-└── README.md                   # This file
+```text
+http://localhost:5000
 ```
 
----
+## API Chính
 
-## 🔌 API Endpoints
+### Search visual
 
-### 1. `/` (GET)
-- **Mục đích:** Hiển thị giao diện web chính
-- **Response:** HTML page
-
-### 2. `/search` (POST)
-- **Mục đích:** Tìm kiếm video
-- **Request body:**
-  ```json
-  {
-    "description": "person walking",
-    "top_k": 100
-  }
-  ```
-- **Response:**
-  ```json
-  [
-    {
-      "video_id": "L01_V001",
-      "keyframe_index": 150,
-      "clip_score": 0.8542,
-      "fps": 25.0,
-      "start_seconds": 6.0
-    }
-  ]
-  ```
-
-### 3. `/api/login` (POST)
-- **Mục đích:** Kết nối evaluation server, lấy session info
-- **Request body:** `{}`
-- **Response:**
-  ```json
-  {
-    "sessionId": "CXTDKFpWUS8QDARbbM6n61yJJ7Yiu9eL",
-    "evaluationId": "76f9d8a8-e30d-4840-9865-a09ad24859a6"
-  }
-  ```
-
-### 4. `/api/submit` (POST)
-- **Mục đích:** Nộp kết quả lên evaluation server
-- **Request body:**
-  ```json
-  {
-    "sessionId": "xxx",
-    "evaluationId": "yyy",
-    "videoId": "L01_V001",
-    "timeMs": 6000
-  }
-  ```
-- **Response:**
-  ```json
-  {
-    "status": "success",
-    "remote_response": {...}
-  }
-  ```
-
-### 5. `/videos/<video_id>` (GET)
-- **Mục đích:** Stream video MP4
-- **Response:** Video file (binary)
-
-### 6. `/keyframes/<video_id>/keyframe_<index>.webp` (GET)
-- **Mục đích:** Lấy ảnh keyframe
-- **Response:** Image file (webp)
-
----
-
-## 🐛 Troubleshooting
-
-### ❌ Lỗi: "Milvus connection failed"
-
-**Nguyên nhân:** Docker container chưa khởi động hoặc port bị chặn
-
-**Giải pháp:**
-```bash
-# Kiểm tra container status
-docker compose ps
-
-# Restart containers
-docker compose restart
-
-# Xem logs
-docker compose logs milvus-standalone
+```http
+POST /search
+Content-Type: application/json
 ```
 
----
-
-### ❌ Lỗi: "Elasticsearch not available"
-
-**Giải pháp:**
-```bash
-# Kiểm tra Elasticsearch health
-curl http://localhost:9200/_cluster/health
-
-# Restart nếu cần
-docker compose restart elasticsearch
+```json
+{
+  "description": "người cầm ô đứng cạnh xe màu đỏ"
+}
 ```
 
----
+### Search transcript
 
-### ❌ Lỗi: "No videos found"
-
-**Nguyên nhân:** Chưa có video trong `data/videos/`
-
-**Giải pháp:**
-1. Copy video MP4 vào `data/videos/`
-2. Chạy lại ingest: `python -m backend.ingest_data`
-
----
-
-### ❌ Lỗi: "Frame counter not updating"
-
-**Nguyên nhân:** JavaScript cache hoặc event listener issue
-
-**Giải pháp:**
-1. Hard refresh: **Ctrl+Shift+R** (Windows) hoặc **Cmd+Shift+R** (Mac)
-2. Mở Console (F12) → Kiểm tra errors
-3. Kiểm tra `video-player.js` có log `updateFrameInfo called` không
-
----
-
-### ❌ Lỗi: "Submit failed: 401 Unauthorized"
-
-**Nguyên nhân:** Session ID không đúng hoặc đã expire
-
-**Giải pháp:**
-1. Click **"Connect"** lại để refresh session
-2. Kiểm tra `backend/config.py` → `SESSION_ID` có đúng không
-3. Kiểm tra evaluation server có online không:
-   ```bash
-   curl http://192.168.20.156:5601/api/health
-   ```
-
----
-
-### ❌ Video không play trong modal
-
-**Giải pháp:**
-1. Kiểm tra video file tồn tại: `data/videos/L01_V001.mp4`
-2. Kiểm tra format: Phải là MP4 (H.264)
-3. Convert nếu cần:
-   ```bash
-   ffmpeg -i input.mp4 -c:v libx264 -c:a aac output.mp4
-   ```
-
----
-
-##  Performance Tips
-
-### 1. Tăng tốc ingest
-```python
-# Trong backend/ingest_data.py
-BULK_CHUNK_SIZE = 2000  # Tăng lên 5000 nếu RAM đủ
+```json
+{
+  "transcript": "hôm nay trời mưa rất lớn"
+}
 ```
 
-### 2. Giảm keyframe density
-```python
-# Trong scripts/extract_keyframes.py
-KEYFRAME_INTERVAL = 1.0  # Tăng lên 2.0 để giảm số frame
+### Submit
+
+```http
+POST /api/submit
+Content-Type: application/json
 ```
 
-### 3. Optimize Docker
-```bash
-# Tăng memory cho Docker Desktop
-# Settings → Resources → Memory: 8GB+
+```json
+{
+  "sessionId": "...",
+  "evaluationId": "...",
+  "videoId": "L01_V001",
+  "timeMs": 35680
+}
 ```
 
----
+## Metrics Cần Theo Dõi
 
-## 🤝 Contributing
+Trong thi đấu, nên log theo từng tầng:
 
-Contributions are welcome! Vui lòng:
-1. Fork repository
-2. Tạo feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Mở Pull Request
+| Metric | Ý nghĩa |
+| --- | --- |
+| Recall@50 | Candidate generation có bắt được đáp án không |
+| Recall@100 | Search rộng có đủ tốt không |
+| MRR@10 | Đáp án đúng lên sớm thế nào |
+| nDCG@10 | Ranking top đầu tốt không |
+| Latency per stage | Chậm ở embedding, DB, fusion hay rerank |
+| GPU memory | Model có vừa GPU không |
+| Cache hit rate | Cache có giúp giảm latency không |
 
----
+Latency budget gợi ý:
 
-## 📝 License
+| Stage | Mục tiêu |
+| --- | ---: |
+| Query preprocessing + embedding | < 100 ms nếu cache miss |
+| Dense retrieval | < 100-200 ms |
+| Sparse retrieval | < 100-200 ms |
+| Fusion | < 20 ms |
+| Rerank top 50 | 200-800 ms tùy GPU/model |
+| Total interactive search | 0.5-2.0 s |
 
-Dự án này chỉ phục vụ mục đích học tập và nghiên cứu.
+## Checklist Khi Debug Search
 
----
+Nếu kết quả không tốt, kiểm tra theo thứ tự:
 
-## 👨‍💻 Technical Details
+1. Keyframe map có đúng `Seconds` và `OriginalFrame` không?
+2. FPS đọc từ video có đúng không?
+3. Embedding có normalize không?
+4. Milvus metric là `COSINE` hay `IP`?
+5. Query tiếng Việt có cần dịch sang tiếng Anh không?
+6. Top 50 visual có chứa đáp án không?
+7. Elasticsearch transcript/OCR có index đúng video_id và timestamp không?
+8. Fusion có cắt candidate quá sớm không?
+9. Reranker input có đủ OCR/transcript/caption context không?
+10. Submit dùng millisecond hay frame number?
 
-### Frame Timing Logic
+## Nguồn Tham Khảo Model Và Công Nghệ
 
-**Cách tính thời gian từ keyframe index:**
-```python
-start_seconds = keyframe_index / fps
-time_ms = round(start_seconds * 1000)
-```
+- SigLIP 2: https://arxiv.org/abs/2502.14786
+- jina-clip-v2: https://huggingface.co/jinaai/jina-clip-v2
+- PaddleOCR-VL: https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html
+- Milvus multi-vector hybrid search: https://milvus.io/docs/multi-vector-search.md
+- Docker GPU support: https://docs.docker.com/compose/how-tos/gpu-support/
+- Triton dynamic batching: https://docs.nvidia.com/deeplearning/triton-inference-server/
+- BGE reranker v2: https://bge-model.com/bge/bge_reranker_v2.html
 
-**Ví dụ:**
-- Video FPS: 25
-- Keyframe index: 150
-- → Start time: 150 / 25 = **6.0 seconds** = **6000 ms**
-
-### Submit Flow
-
-```
-User clicks "Submit"
-    ↓
-JavaScript gets currentTime from <video>
-    ↓
-timeMs = Math.round(currentTime * 1000)
-    ↓
-POST /api/submit with {sessionId, evaluationId, videoId, timeMs}
-    ↓
-Flask backend forwards to evaluation server
-    ↓
-Response displayed to user
-```
-
----
-
-## 📞 Support
-
-Nếu gặp vấn đề:
-1. Kiểm tra [Troubleshooting](#troubleshooting) section
-2. Xem logs: `docker compose logs -f`
-3. Mở Console (F12) → Tab Console để xem JavaScript errors
-4. Check backend logs trong terminal đang chạy `python -m backend.app`
-
----
-
-**Happy Searching! 🎬🔍**
