@@ -99,7 +99,8 @@ def create_directories():
         os.path.join(config.KEYFRAMES_DIR, "maps"),
         config.EMBEDDINGS_DIR,
         config.TRANSCRIPTS_DIR,
-        "data/ocr_result",  # For OCR results
+        config.OCR_RESULTS_DIR,
+        config.CAPTIONS_DIR,
     ]
     
     for directory in directories:
@@ -152,7 +153,9 @@ def check_config():
     
     logger.info(f"  Milvus: {config.MILVUS_HOST}:{config.MILVUS_PORT}")
     logger.info(f"  Elasticsearch: {config.ELASTIC_SCHEME}://{config.ELASTIC_HOST}:{config.ELASTIC_PORT}")
-    logger.info(f"  CLIP Model: {config.CLIP_MODEL_NAME} ({config.CLIP_PRETRAINED})")
+    logger.info(f"  Visual Model: {config.VISUAL_MODEL_PROVIDER}:{config.VISUAL_MODEL_NAME} ({config.VISUAL_MODEL_PRETRAINED})")
+    logger.info(f"  OCR Engine: {config.OCR_ENGINE}")
+    logger.info(f"  Reranker: {config.RERANK_MODEL_PROVIDER}:{config.RERANK_MODEL_NAME}")
     logger.info(f"  Vector Dimension: {config.VECTOR_DIMENSION}")
     logger.info(f"  Videos Directory: {config.VIDEOS_DIR}")
     

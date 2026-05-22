@@ -50,7 +50,6 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     volumes:
       - ./volumes/es_data:/usr/share/elasticsearch/data
@@ -61,6 +60,40 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  redis:
+    container_name: retrieval-redis
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --appendonly no
+
+  backend-api:
+    container_name: retrieval-backend-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - api
+    environment:
+      MILVUS_HOST: standalone
+      ELASTIC_HOST: elasticsearch
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "5000:5000"
+    depends_on:
+      - standalone
+      - elasticsearch
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 networks:
   default:

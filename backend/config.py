@@ -1,39 +1,104 @@
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
+        return False
 
 # Get project root directory (parent of backend/)
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR_PATH = Path(__file__).resolve().parent.parent
+ROOT_DIR = str(ROOT_DIR_PATH)
+
+# Load .env automatically. Environment variables still win over file values.
+load_dotenv(ROOT_DIR_PATH / ".env", override=False)
+load_dotenv(ROOT_DIR_PATH / "whisper_config.env", override=False)
+
+
+def _env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(_env(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(_env(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = _env(name, "true" if default else "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
 
 # --- Milvus settings ---
-MILVUS_HOST = "localhost"
-MILVUS_PORT = "19530"
-KEYFRAME_COLLECTION_NAME = "video_keyframes"
-# CLIP ViT-B-32 produces 512-dimensional embeddings; keep this in sync with model choice
-VECTOR_DIMENSION = 512
+MILVUS_HOST = _env("MILVUS_HOST", "localhost")
+MILVUS_PORT = _env("MILVUS_PORT", "19530")
+KEYFRAME_COLLECTION_NAME = _env("KEYFRAME_COLLECTION_NAME", "video_keyframes")
+
+# Keep this in sync with the active visual model. OpenCLIP ViT-B-32 is 512d.
+VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 512)
 
 # Compatibility aliases / service URLs (used by scripts expecting these names)
-# Elasticsearch
-ELASTICSEARCH_URL = "http://localhost:9200"
+ELASTICSEARCH_URL = _env("ELASTICSEARCH_URL", "http://localhost:9200")
 
 # MinIO (object storage)
-MINIO_ENDPOINT = "http://localhost:9000"
-MINIO_ACCESS_KEY = "minioadmin"
-MINIO_SECRET_KEY = "minioadmin"
-MINIO_BUCKET = "milvus"
+MINIO_ENDPOINT = _env("MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = _env("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = _env("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET = _env("MINIO_BUCKET", "milvus")
 
 # --- Data paths (absolute from project root) ---
-CLIP_FEATURES_DIR = os.path.join(ROOT_DIR, "data", "embeddings")
-# Backwards compatibility alias
+DATA_DIR = Path(_env("DATA_DIR", str(ROOT_DIR_PATH / "data"))).resolve()
+VIDEOS_DIR = _env("VIDEOS_DIR", str(DATA_DIR / "videos"))
+KEYFRAMES_DIR = _env("KEYFRAMES_DIR", str(DATA_DIR / "keyframes"))
+TRANSCRIPTS_DIR = _env("TRANSCRIPTS_DIR", str(DATA_DIR / "transcripts"))
+OCR_RESULTS_DIR = _env("OCR_RESULTS_DIR", str(DATA_DIR / "ocr_result"))
+CAPTIONS_DIR = _env("CAPTIONS_DIR", str(DATA_DIR / "captions"))
+CLIP_FEATURES_DIR = _env("EMBEDDINGS_DIR", str(DATA_DIR / "embeddings"))
 EMBEDDINGS_DIR = CLIP_FEATURES_DIR
-KEYFRAMES_DIR = os.path.join(ROOT_DIR, "data", "keyframes")
-TRANSCRIPTS_DIR = os.path.join(ROOT_DIR, "data", "transcripts")
-VIDEOS_DIR = os.path.join(ROOT_DIR, "data", "videos")
 
-# --- Model ---
-# Use a smaller CLIP backbone by default to speed up embedding computation.
-# Change to a lighter model (ViT-B) to trade a small amount of accuracy for much faster runtime.
-CLIP_MODEL_NAME = "ViT-B-32"
-# Recommended pretrained source for ViT-B; open_clip will attempt to load the pretrained weights.
-CLIP_PRETRAINED = "openai"
+# --- Model registry ---
+# Baseline remains OpenCLIP so the current repo keeps working without new weights.
+VISUAL_MODEL_PROVIDER = _env("VISUAL_MODEL_PROVIDER", "openclip").lower()
+VISUAL_MODEL_NAME = _env("VISUAL_MODEL", _env("CLIP_MODEL_NAME", "ViT-B-32"))
+VISUAL_MODEL_PRETRAINED = _env("VISUAL_MODEL_PRETRAINED", _env("CLIP_PRETRAINED", "openai"))
+MODEL_TRUST_REMOTE_CODE = _env_bool("MODEL_TRUST_REMOTE_CODE", False)
+
+# Backwards-compatible names used by existing scripts.
+CLIP_MODEL_NAME = VISUAL_MODEL_NAME
+CLIP_PRETRAINED = VISUAL_MODEL_PRETRAINED
+
+TEXT_MODEL_PROVIDER = _env("TEXT_MODEL_PROVIDER", "none").lower()
+TEXT_MODEL_NAME = _env("TEXT_MODEL", "BAAI/bge-m3")
+RERANK_MODEL_PROVIDER = _env("RERANK_MODEL_PROVIDER", "none").lower()
+RERANK_MODEL_NAME = _env("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+ASR_MODEL = _env("ASR_MODEL", _env("WHISPER_MODEL", "large-v3"))
+OCR_ENGINE = _env("OCR_ENGINE", "paddleocr").lower()
+OCR_LANGUAGES = [lang.strip() for lang in _env("OCR_LANGUAGES", "en,vi").split(",") if lang.strip()]
+
+# --- Retrieval defaults ---
+VISUAL_MAX_RESULTS = _env_int("VISUAL_MAX_RESULTS", 500)
+TEXT_MAX_RESULTS = _env_int("TEXT_MAX_RESULTS", 500)
+FINAL_MAX_RESULTS = _env_int("FINAL_MAX_RESULTS", 500)
+RERANK_TOP_K = _env_int("RERANK_TOP_K", 50)
+RRF_K = _env_int("RRF_K", 60)
+WEIGHT_VISUAL = _env_float("WEIGHT_VISUAL", 1.0)
+WEIGHT_TRANSCRIPT = _env_float("WEIGHT_TRANSCRIPT", 1.0)
+WEIGHT_OCR = _env_float("WEIGHT_OCR", 1.0)
+WEIGHT_CAPTION = _env_float("WEIGHT_CAPTION", 0.8)
+ENABLE_QUERY_TRANSLATION = _env_bool("ENABLE_QUERY_TRANSLATION", False)
 
 OBJECT_LABELS = [
     "Tortoise",
@@ -640,18 +705,20 @@ OBJECT_LABELS = [
 ]
 
 # --- Elasticsearch settings ---
-ELASTIC_HOST = "localhost"
-ELASTIC_PORT = "9200"
-ELASTIC_SCHEME = "http"
-TRANSCRIPT_INDEX = "video_transcripts"
-DEFAULT_FALLBACK_FPS = 25
+ELASTIC_HOST = _env("ELASTIC_HOST", "localhost")
+ELASTIC_PORT = _env("ELASTIC_PORT", "9200")
+ELASTIC_SCHEME = _env("ELASTIC_SCHEME", "http")
+TRANSCRIPT_INDEX = _env("TRANSCRIPT_INDEX", "video_text_segments")
+# Backwards-compatible alias: this index now stores transcript, OCR, and captions.
+MULTIMODAL_TEXT_INDEX = TRANSCRIPT_INDEX
+DEFAULT_FALLBACK_FPS = _env_float("DEFAULT_FALLBACK_FPS", 25.0)
 
 # --- Evaluation Server Settings ---
 # ⚠️ KHI SERVER THAY ĐỔI → CHỈ SỬA 3 DÒNG DƯỚI ĐÂY
-EVAL_SERVER_URL = "http://192.168.20.156:5601"  # ← Đổi IP/domain server mới
-SESSION_ID = "LIj1h0LIHorVZYS7hXUe9bMbDxGJBmg-"  # ← Đổi session ID mới
-EVALUATION_ID = "44457530-7aaa-4186-a4df-bcbaf9908d33"  # ← Đổi evaluation ID mới
+EVAL_SERVER_URL = _env("EVAL_SERVER_URL", "http://192.168.20.156:5601")
+SESSION_ID = _env("SESSION_ID", "LIj1h0LIHorVZYS7hXUe9bMbDxGJBmg-")
+EVALUATION_ID = _env("EVALUATION_ID", "44457530-7aaa-4186-a4df-bcbaf9908d33")
 
 # Credentials (không dùng nếu có SESSION_ID sẵn)
-EVAL_USERNAME = "team006"
-EVAL_PASSWORD = "123456"
+EVAL_USERNAME = _env("EVAL_USERNAME", "team006")
+EVAL_PASSWORD = _env("EVAL_PASSWORD", "123456")
