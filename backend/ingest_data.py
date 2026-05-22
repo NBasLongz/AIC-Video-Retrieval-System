@@ -90,6 +90,13 @@ def setup_milvus_collection(collection_name, schema, index_field, index_params, 
         collection = Collection(collection_name)
         collection.load()
         count = collection.num_entities
+        existing_dim = _collection_vector_dim(collection, index_field)
+        if existing_dim is not None and existing_dim != config.VECTOR_DIMENSION:
+            raise ValueError(
+                f"Milvus collection '{collection_name}' vector dim is {existing_dim}, "
+                f"but config.VECTOR_DIMENSION is {config.VECTOR_DIMENSION}. "
+                "Drop/recreate the collection or restore the matching model config."
+            )
         
         if skip_if_exists and count > 0:
             logger.info(f"Collection '{collection_name}' already exists with {count} entities. Skipping recreation.")
@@ -106,6 +113,17 @@ def setup_milvus_collection(collection_name, schema, index_field, index_params, 
     collection.flush()
     logger.info("Index created and data flushed.")
     return collection
+
+
+def _collection_vector_dim(collection: Collection, vector_field: str) -> int | None:
+    try:
+        for field in collection.schema.fields:
+            if field.name == vector_field:
+                dim = field.params.get("dim") if hasattr(field, "params") else None
+                return int(dim) if dim is not None else None
+    except Exception as exc:
+        logger.warning("Could not inspect Milvus collection schema: %s", exc)
+    return None
 
 def ingest_keyframe_data(collection: Collection, skip_if_has_data=True):
     # Check if collection already has data
@@ -136,6 +154,11 @@ def ingest_keyframe_data(collection: Collection, skip_if_has_data=True):
                 frame_idx = int(pt_file.stem.split("_")[-1])
                 vec = torch.load(str(pt_file), map_location="cpu").numpy().astype(np.float32)
                 vec = vec.reshape(1, -1)
+                if vec.shape[-1] != config.VECTOR_DIMENSION:
+                    raise ValueError(
+                        f"Embedding dimension mismatch in {pt_file}: got {vec.shape[-1]}, "
+                        f"expected {config.VECTOR_DIMENSION}."
+                    )
                 vectors.append(vec)
                 frame_indices.append(frame_idx)
             except Exception as e:
@@ -144,6 +167,11 @@ def ingest_keyframe_data(collection: Collection, skip_if_has_data=True):
 
         if vectors:
             vectors = np.vstack(vectors)
+            if vectors.shape[-1] != config.VECTOR_DIMENSION:
+                raise ValueError(
+                    f"Stacked embeddings for {video_id} have dim {vectors.shape[-1]}, "
+                    f"expected {config.VECTOR_DIMENSION}."
+                )
             num_vectors = len(vectors)
             entities = [[video_id] * num_vectors, frame_indices, vectors]
             collection.insert(entities)
@@ -228,6 +256,10 @@ def ingest_transcript_data(es_client: Elasticsearch, folder_path: str) -> None:
                     "start": round(resolved_start, 3),
                     "end": round(end_sec, 3),
                     "text": text,
+                    "doc_type": "transcript",
+                    "source_type": "asr",
+                    "language": data.get("language"),
+                    "model_name": data.get("model_name"),
                 },
             }
             actions.append(action)
@@ -303,6 +335,8 @@ def ingest_transcript_data(es_client: Elasticsearch, folder_path: str) -> None:
                     "start": float(round(resolved_starts[idx], 3)),
                     "end": float(round(end_secs[idx], 3)),
                     "text": texts[idx],
+                    "doc_type": "transcript",
+                    "source_type": "transcript_csv",
                 },
             }
             actions.append(action)
@@ -318,6 +352,200 @@ def ingest_transcript_data(es_client: Elasticsearch, folder_path: str) -> None:
 
     es_client.indices.refresh(index=config.TRANSCRIPT_INDEX)
     logger.info(f"Transcript ingestion complete. Total documents: {total_docs}")
+
+
+def _parse_keyframe_index_from_name(name: str) -> int | None:
+    try:
+        stem = Path(name).stem
+        return int(stem.split("_")[-1])
+    except (ValueError, AttributeError):
+        return None
+
+
+def _resolve_keyframe_start(video_id: str, keyframe_index: int, fallback_seconds: float = 0.0) -> float:
+    mapping = _load_keyframe_map(video_id)
+    if mapping is None:
+        return float(fallback_seconds)
+
+    seconds, frame_ids = mapping
+    if frame_ids.size == 0:
+        return float(fallback_seconds)
+
+    matches = np.where(frame_ids == int(keyframe_index))[0]
+    if matches.size:
+        return float(seconds[matches[0]])
+    return float(fallback_seconds)
+
+
+def ingest_ocr_data(es_client: Elasticsearch, folder_path: str) -> None:
+    """Ingest OCR JSON artifacts into the shared multimodal text index.
+
+    Supported current format:
+    data/ocr_result/<video_id>/keyframe_0.json
+    {
+      "keyframe": "keyframe_0.webp",
+      "time_seconds": 0.0,
+      "ocr_results": [{"text": "...", "confidence": 0.95}]
+    }
+    """
+
+    ocr_dir = Path(folder_path)
+    if not ocr_dir.exists():
+        logger.warning("OCR directory not found: %s", ocr_dir)
+        return
+
+    actions = []
+    total_docs = 0
+
+    for video_dir in sorted(p for p in ocr_dir.iterdir() if p.is_dir()):
+        video_id = video_dir.name
+        for json_path in sorted(video_dir.glob("*.json")):
+            try:
+                with json_path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except Exception as exc:
+                logger.warning("Failed to read OCR file %s: %s", json_path, exc)
+                continue
+
+            keyframe_index = _parse_keyframe_index_from_name(
+                data.get("keyframe") or json_path.name
+            )
+            if keyframe_index is None:
+                continue
+
+            fallback_seconds = float(data.get("time_seconds") or 0.0)
+            start_seconds = _resolve_keyframe_start(video_id, keyframe_index, fallback_seconds)
+
+            raw_results = data.get("ocr_results") or data.get("results") or []
+            text_parts = []
+            confidences = []
+            for result in raw_results:
+                if isinstance(result, dict):
+                    text = str(result.get("text") or "").strip()
+                    confidence = result.get("confidence")
+                elif isinstance(result, (list, tuple)) and len(result) >= 2:
+                    text = str(result[1] or "").strip()
+                    confidence = result[2] if len(result) >= 3 else None
+                else:
+                    continue
+
+                if text:
+                    text_parts.append(text)
+                try:
+                    if confidence is not None:
+                        confidences.append(float(confidence))
+                except (TypeError, ValueError):
+                    pass
+
+            ocr_text = " ".join(text_parts).strip()
+            if not ocr_text:
+                continue
+
+            avg_confidence = float(np.mean(confidences)) if confidences else None
+            actions.append(
+                {
+                    "_index": config.TRANSCRIPT_INDEX,
+                    "_id": f"{video_id}_{keyframe_index}_ocr",
+                    "_source": {
+                        "video_id": video_id,
+                        "keyframe_index": int(keyframe_index),
+                        "start": round(start_seconds, 3),
+                        "end": round(start_seconds, 3),
+                        "text": ocr_text,
+                        "ocr_text": ocr_text,
+                        "doc_type": "ocr",
+                        "source_type": "ocr",
+                        "model_name": data.get("model_name") or config.OCR_ENGINE,
+                        "confidence": avg_confidence,
+                        "metadata": {
+                            "artifact": str(json_path),
+                            "num_boxes": len(text_parts),
+                        },
+                    },
+                }
+            )
+
+            if len(actions) >= BULK_CHUNK_SIZE:
+                success, _ = bulk(es_client, actions, refresh=False)
+                total_docs += success
+                actions.clear()
+
+    if actions:
+        success, _ = bulk(es_client, actions, refresh=False)
+        total_docs += success
+
+    if total_docs:
+        es_client.indices.refresh(index=config.TRANSCRIPT_INDEX)
+    logger.info("OCR ingestion complete. Total documents: %s", total_docs)
+
+
+def ingest_caption_data(es_client: Elasticsearch, folder_path: str) -> None:
+    """Ingest optional caption/VLM tag artifacts into Elasticsearch."""
+
+    captions_dir = Path(folder_path)
+    if not captions_dir.exists():
+        logger.warning("Caption directory not found: %s", captions_dir)
+        return
+
+    actions = []
+    total_docs = 0
+
+    json_files = sorted(captions_dir.glob("*.json")) + sorted(captions_dir.glob("*/*.json"))
+    for json_path in json_files:
+        try:
+            with json_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception as exc:
+            logger.warning("Failed to read caption file %s: %s", json_path, exc)
+            continue
+
+        video_id = data.get("video_id") or json_path.parent.name
+        keyframe_index = data.get("keyframe_index")
+        if keyframe_index is None:
+            keyframe_index = _parse_keyframe_index_from_name(data.get("keyframe") or json_path.name)
+        if keyframe_index is None:
+            continue
+
+        caption = str(data.get("caption") or data.get("text") or "").strip()
+        if not caption:
+            tags = data.get("tags") or []
+            caption = " ".join(str(tag) for tag in tags if tag).strip()
+        if not caption:
+            continue
+
+        start_seconds = float(data.get("start") or data.get("time_seconds") or 0.0)
+        start_seconds = _resolve_keyframe_start(video_id, int(keyframe_index), start_seconds)
+        actions.append(
+            {
+                "_index": config.TRANSCRIPT_INDEX,
+                "_id": f"{video_id}_{keyframe_index}_caption",
+                "_source": {
+                    "video_id": video_id,
+                    "keyframe_index": int(keyframe_index),
+                    "start": round(start_seconds, 3),
+                    "end": round(start_seconds, 3),
+                    "text": caption,
+                    "caption": caption,
+                    "doc_type": "caption",
+                    "source_type": "vlm_caption",
+                    "model_name": data.get("model_name"),
+                    "metadata": data.get("metadata") or {},
+                },
+            }
+        )
+
+        if len(actions) >= BULK_CHUNK_SIZE:
+            success, _ = bulk(es_client, actions, refresh=False)
+            total_docs += success
+            actions.clear()
+
+    if actions:
+        success, _ = bulk(es_client, actions, refresh=False)
+        total_docs += success
+
+    if total_docs:
+        es_client.indices.refresh(index=config.TRANSCRIPT_INDEX)
+    logger.info("Caption ingestion complete. Total documents: %s", total_docs)
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest keyframe embeddings và transcripts.")
@@ -335,6 +563,16 @@ def main():
         "--skip-milvus",
         action="store_true",
         help="Bỏ qua ingest keyframe embeddings vào Milvus."
+    )
+    parser.add_argument(
+        "--skip-ocr",
+        action="store_true",
+        help="Bỏ qua ingest OCR artifacts."
+    )
+    parser.add_argument(
+        "--skip-captions",
+        action="store_true",
+        help="Bỏ qua ingest caption/VLM artifacts."
     )
     args = parser.parse_args()
 
@@ -362,6 +600,10 @@ def main():
             recreate_transcript_index(es_client)
 
         ingest_transcript_data(es_client, config.TRANSCRIPTS_DIR)
+        if not args.skip_ocr:
+            ingest_ocr_data(es_client, config.OCR_RESULTS_DIR)
+        if not args.skip_captions:
+            ingest_caption_data(es_client, config.CAPTIONS_DIR)
     else:
         logger.info("Bỏ qua ingest transcript theo yêu cầu.")
 

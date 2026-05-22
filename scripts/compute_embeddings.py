@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -28,6 +29,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _embedding_dim(embedding: np.ndarray) -> int:
+    if embedding is None:
+        return 0
+    return int(np.asarray(embedding).reshape(1, -1).shape[-1])
+
+
+def _validate_embedding_dim(embedding: np.ndarray, image_path: Path) -> None:
+    dim = _embedding_dim(embedding)
+    if dim != config.VECTOR_DIMENSION:
+        raise ValueError(
+            f"Embedding dimension mismatch for {image_path}: got {dim}, "
+            f"expected config.VECTOR_DIMENSION={config.VECTOR_DIMENSION}. "
+            "Update VECTOR_DIMENSION and recreate Milvus collection, or use the matching model."
+        )
+
+
+def _write_embedding_metadata(output_dir: Path, num_keyframes: int) -> None:
+    metadata = {
+        "provider": config.VISUAL_MODEL_PROVIDER,
+        "model_name": config.VISUAL_MODEL_NAME,
+        "pretrained": config.VISUAL_MODEL_PRETRAINED,
+        "vector_dimension": config.VECTOR_DIMENSION,
+        "normalized": True,
+        "num_keyframes": num_keyframes,
+    }
+    with (output_dir / "_metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, ensure_ascii=False, indent=2)
+
+
 class ImageEncoder:
     """CLIP image encoder for computing keyframe embeddings.
 
@@ -36,6 +66,10 @@ class ImageEncoder:
     """
     
     def __init__(self, device: str = None, num_workers: int = 4):
+        self.provider = config.VISUAL_MODEL_PROVIDER
+        self.model_name = config.VISUAL_MODEL_NAME
+        self.processor = None
+        self.preprocess = None
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
@@ -46,36 +80,69 @@ class ImageEncoder:
             else:
                 self.device = device
         
-        logger.info(f"Loading CLIP model '{config.CLIP_MODEL_NAME}' on device '{self.device}'...")
-        
-        # Create model and preprocess
-        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-            config.CLIP_MODEL_NAME,
-            pretrained=config.CLIP_PRETRAINED,
+        logger.info(
+            "Loading visual model provider=%s model='%s' on device '%s'...",
+            self.provider,
+            self.model_name,
+            self.device,
         )
 
-        # Move model to device
-        try:
-            self.model = self.model.to(self.device)
-        except Exception:
-            # fallback: if .to fails, try .cuda() when requested
-            if self.device == "cuda" and torch.cuda.is_available():
-                self.model = self.model.cuda()
-            else:
-                self.model = self.model.cpu()
-        
-        # Remove text encoder to save memory
-        del self.model.transformer
-        del self.model.token_embedding
-        del self.model.ln_final
-        del self.model.text_projection
-        del self.model.attn_mask
-        del self.model.positional_embedding
+        if self.provider == "openclip":
+            self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+                config.CLIP_MODEL_NAME,
+                pretrained=config.CLIP_PRETRAINED,
+            )
+            self._move_model_to_device()
+
+            # Remove text encoder to save memory when attributes exist.
+            for attr_name in (
+                "transformer",
+                "token_embedding",
+                "ln_final",
+                "text_projection",
+                "attn_mask",
+                "positional_embedding",
+            ):
+                if hasattr(self.model, attr_name):
+                    try:
+                        delattr(self.model, attr_name)
+                    except AttributeError:
+                        pass
+        else:
+            self._load_transformers_visual_model()
         
         self.model.eval()
         # Number of worker threads for preprocessing (image decoding + transform)
         self.num_workers = max(1, int(num_workers))
-        logger.info(f"CLIP model loaded successfully on {self.device}")
+        logger.info("Visual model loaded successfully on %s", self.device)
+
+    def _move_model_to_device(self):
+        try:
+            self.model = self.model.to(self.device)
+        except Exception:
+            if self.device == "cuda" and torch.cuda.is_available():
+                self.model = self.model.cuda()
+            else:
+                self.model = self.model.cpu()
+
+    def _load_transformers_visual_model(self):
+        try:
+            from transformers import AutoModel, AutoProcessor
+        except ImportError as exc:
+            raise ImportError(
+                "Non-OpenCLIP visual models require transformers. Install optional "
+                "dependencies or set VISUAL_MODEL_PROVIDER=openclip."
+            ) from exc
+
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
+        )
+        self.model = AutoModel.from_pretrained(
+            self.model_name,
+            trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
+        )
+        self._move_model_to_device()
     
     @torch.no_grad()
     def encode_image(self, image_path: Path) -> np.ndarray:
@@ -90,9 +157,21 @@ class ImageEncoder:
         """
         try:
             image = Image.open(image_path).convert("RGB")
-            image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
-            
-            image_features = self.model.encode_image(image_tensor)
+            if self.provider == "openclip":
+                image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
+                image_features = self.model.encode_image(image_tensor)
+            else:
+                inputs = self.processor(images=[image], return_tensors="pt")
+                inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                if hasattr(self.model, "get_image_features"):
+                    image_features = self.model.get_image_features(**inputs)
+                else:
+                    outputs = self.model(**inputs)
+                    image_features = getattr(outputs, "image_embeds", None)
+                    if image_features is None:
+                        image_features = getattr(outputs, "pooler_output", None)
+                    if image_features is None:
+                        image_features = outputs.last_hidden_state[:, 0]
             
             # Move to CPU and normalize
             if self.device == "cuda":
@@ -116,29 +195,42 @@ class ImageEncoder:
         Returns:
             List of embedding vectors
         """
-        # Preprocess images in parallel to reduce CPU I/O bottleneck
+        # Preprocess images in parallel to reduce CPU I/O bottleneck.
         images = []
-        paths = []
 
         def _load_and_preprocess(p):
             try:
                 img = Image.open(p).convert("RGB")
-                return self.preprocess(img)
+                if self.provider == "openclip":
+                    return self.preprocess(img)
+                return img
             except Exception as e:
                 logger.error(f"Error loading {p}: {e}")
                 return None
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as ex:
-            for result, p in zip(ex.map(_load_and_preprocess, image_paths), image_paths):
+            for result, _ in zip(ex.map(_load_and_preprocess, image_paths), image_paths):
                 if result is not None:
                     images.append(result)
-                    paths.append(p)
 
         if not images:
             return []
 
-        image_batch = torch.stack(images).to(self.device)
-        image_features = self.model.encode_image(image_batch)
+        if self.provider == "openclip":
+            image_batch = torch.stack(images).to(self.device)
+            image_features = self.model.encode_image(image_batch)
+        else:
+            inputs = self.processor(images=images, return_tensors="pt")
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            if hasattr(self.model, "get_image_features"):
+                image_features = self.model.get_image_features(**inputs)
+            else:
+                outputs = self.model(**inputs)
+                image_features = getattr(outputs, "image_embeds", None)
+                if image_features is None:
+                    image_features = getattr(outputs, "pooler_output", None)
+                if image_features is None:
+                    image_features = outputs.last_hidden_state[:, 0]
         
         # Move to CPU and normalize
         if self.device == "cuda":
@@ -194,6 +286,7 @@ def compute_embeddings_for_video(
             embedding = encoder.encode_image(keyframe_file)
             
             if embedding is not None:
+                _validate_embedding_dim(embedding, keyframe_file)
                 # Convert to torch tensor and save
                 embedding_tensor = torch.from_numpy(embedding)
                 output_path = embeddings_dir / f"keyframe_{frame_idx}.pt"
@@ -205,11 +298,13 @@ def compute_embeddings_for_video(
             if len(embeddings) > 0:
                 for j, keyframe_file in enumerate(batch_files):
                     if j < len(embeddings):
+                        _validate_embedding_dim(embeddings[j:j+1], keyframe_file)
                         frame_idx = int(keyframe_file.stem.split("_")[-1])
                         embedding_tensor = torch.from_numpy(embeddings[j:j+1])
                         output_path = embeddings_dir / f"keyframe_{frame_idx}.pt"
                         torch.save(embedding_tensor, output_path)
     
+    _write_embedding_metadata(embeddings_dir, len(keyframe_files))
     logger.info(f"Embeddings saved to {embeddings_dir}")
     return True
 

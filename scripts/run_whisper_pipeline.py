@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 def run_transcript_extraction(
     model_size: str = "base",
     language: str = None,
-    skip_existing: bool = True
+    skip_existing: bool = True,
+    beam_size: int = 5,
+    vietnamese_prompt: bool = False,
 ):
     """
     Chạy script extract_transcripts.py
@@ -39,7 +41,7 @@ def run_transcript_extraction(
         language: Language code (None = auto detect)
         skip_existing: Skip videos that already have transcripts
     """
-    from scripts.extract_transcripts import WhisperTranscriptExtractor
+    from scripts.extract_transcripts import DEFAULT_VIETNAMESE_PROMPT, WhisperTranscriptExtractor
     
     logger.info("=" * 60)
     logger.info("STEP 1: EXTRACTING TRANSCRIPTS WITH WHISPER")
@@ -47,7 +49,9 @@ def run_transcript_extraction(
     
     extractor = WhisperTranscriptExtractor(
         model_size=model_size,
-        language=language
+        language=language,
+        beam_size=beam_size,
+        initial_prompt=DEFAULT_VIETNAMESE_PROMPT if vietnamese_prompt else None,
     )
     
     processed = extractor.batch_extract(
@@ -88,7 +92,7 @@ def main():
         "--model",
         type=str,
         default=default_model,
-        choices=["tiny", "base", "small", "medium", "large"],
+        choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"],
         help=f"Whisper model size (default: {default_model})"
     )
     
@@ -117,6 +121,17 @@ def main():
         action="store_true",
         help="Only run ingestion, skip transcript extraction"
     )
+    parser.add_argument(
+        "--beam-size",
+        type=int,
+        default=5,
+        help="Beam size for Whisper decoding."
+    )
+    parser.add_argument(
+        "--vietnamese-prompt",
+        action="store_true",
+        help="Use a Vietnamese initial prompt to reduce common transcription errors."
+    )
     
     args = parser.parse_args()
     
@@ -126,7 +141,9 @@ def main():
             run_transcript_extraction(
                 model_size=args.model,
                 language=args.language,
-                skip_existing=args.skip_existing
+                skip_existing=args.skip_existing,
+                beam_size=args.beam_size,
+                vietnamese_prompt=args.vietnamese_prompt,
             )
         
         # Step 2: Ingest data

@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend import config
 from backend.ingest_data import ingest_transcript_data
-from scripts.extract_transcripts import WhisperTranscriptExtractor
+from scripts.extract_transcripts import DEFAULT_VIETNAMESE_PROMPT, WhisperTranscriptExtractor
 from utils.elasticsearch_client import get_elasticsearch_client, recreate_transcript_index
 
 logging.basicConfig(
@@ -58,7 +58,9 @@ def extract_transcripts(
     output_dir: str = None,
     video_pattern: str = "*.mp4",
     single_video: str = None,
-    skip_existing: bool = True
+    skip_existing: bool = True,
+    beam_size: int = 5,
+    vietnamese_prompt: bool = False,
 ):
     """
     Extract transcripts từ video sử dụng Whisper
@@ -74,7 +76,9 @@ def extract_transcripts(
     extractor = WhisperTranscriptExtractor(
         model_size=model_size,
         language=language,
-        device=device
+        device=device,
+        beam_size=beam_size,
+        initial_prompt=DEFAULT_VIETNAMESE_PROMPT if vietnamese_prompt else None,
     )
     
     # Single video mode
@@ -236,7 +240,7 @@ def main():
         "--model",
         type=str,
         default="base",
-        choices=["tiny", "base", "small", "medium", "large"],
+        choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"],
         help="Whisper model size (default: base)"
     )
     
@@ -253,6 +257,17 @@ def main():
         default=None,
         choices=["cuda", "cpu"],
         help="Device to run on (default: auto detect)"
+    )
+    parser.add_argument(
+        "--beam-size",
+        type=int,
+        default=5,
+        help="Beam size for Whisper decoding."
+    )
+    parser.add_argument(
+        "--vietnamese-prompt",
+        action="store_true",
+        help="Use a Vietnamese initial prompt to reduce common transcription errors."
     )
     
     # Path options
@@ -320,7 +335,9 @@ def main():
                 output_dir=args.transcripts_dir,
                 video_pattern=args.video_pattern,
                 single_video=args.video,
-                skip_existing=not args.force
+                skip_existing=not args.force,
+                beam_size=args.beam_size,
+                vietnamese_prompt=args.vietnamese_prompt,
             )
             
             if not processed and not args.video:
