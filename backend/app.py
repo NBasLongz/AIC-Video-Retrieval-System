@@ -93,27 +93,30 @@ def search_api():
     logger.info(f"Received search request: {query_data}")
 
     try:
-        description = query_data.get("description", "")
-        result_sets = []
+        if query_data.get("fusion") == "intersection":
+            description = query_data.get("description", "")
+            result_sets = []
+            if description:
+                result_sets.append(
+                    search_system.clip_search(
+                        description,
+                        max_results=config.VISUAL_MAX_RESULTS,
+                    )
+                )
 
-        # 1. Search Text/CLIP
-        if description:
-            clip_results = search_system.clip_search(description, max_results=500)
-            result_sets.append(clip_results)
-
-        # 2. Search Transcript
-        transcript_text = query_data.get("transcript") or query_data.get("audio")
-        if transcript_text:
-            transcript_results = search_system.transcript_search(transcript_text)
-            result_sets.append(transcript_results)
+            transcript_text = query_data.get("transcript") or query_data.get("audio")
+            if transcript_text:
+                result_sets.append(search_system.transcript_search(transcript_text))
 
         # Giao các tập kết quả
-        results = search_system.intersect(result_sets)
+            results = search_system.intersect(result_sets)
+        else:
+            results = search_system.hybrid_search(query_data)
 
         for item in results:
             vid = item.get("video_id")
             # Lấy FPS từ Cache RAM, mặc định 25 nếu không tìm thấy
-            item["fps"] = VIDEO_METADATA.get(vid, 25.0)
+            item["fps"] = item.get("fps") or VIDEO_METADATA.get(vid, config.DEFAULT_FALLBACK_FPS)
 
         logger.info(f"Search completed. Number of results: {len(results)}")
         return jsonify(results)

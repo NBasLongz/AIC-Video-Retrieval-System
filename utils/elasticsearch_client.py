@@ -43,7 +43,23 @@ def transcript_index_mapping() -> Dict[str, Any]:
                 "keyframe_index": {"type": "integer"},
                 "start": {"type": "float"},
                 "end": {"type": "float"},
+                "doc_type": {"type": "keyword"},
+                "source_type": {"type": "keyword"},
+                "language": {"type": "keyword"},
+                "model_name": {"type": "keyword"},
+                "confidence": {"type": "float"},
+                "metadata": {"type": "object", "enabled": True},
                 "text": {
+                    "type": "text",
+                    "analyzer": "transcript_text",
+                    "fields": {"as_you_type": {"type": "search_as_you_type"}},
+                },
+                "caption": {
+                    "type": "text",
+                    "analyzer": "transcript_text",
+                    "fields": {"as_you_type": {"type": "search_as_you_type"}},
+                },
+                "ocr_text": {
                     "type": "text",
                     "analyzer": "transcript_text",
                     "fields": {"as_you_type": {"type": "search_as_you_type"}},
