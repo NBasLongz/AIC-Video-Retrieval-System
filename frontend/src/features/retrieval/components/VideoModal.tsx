@@ -37,22 +37,30 @@ export function VideoModal({
   }, [item]);
 
   useEffect(() => {
-    if (!videoRef.current || !item) return;
-    videoRef.current.currentTime = currentTimestamp;
-  }, [currentTimestamp, item]);
-
-  useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
   }, [speed]);
 
   if (!item) return null;
 
+  const seekToFrame = (frame: number) => {
+    const nextFrame = Math.max(0, frame);
+    setCurrentFrame(nextFrame);
+    if (videoRef.current) {
+      videoRef.current.currentTime = frameToTimestamp(nextFrame, fps);
+    }
+  };
+
+  const syncFrameFromVideo = () => {
+    if (!videoRef.current) return;
+    setCurrentFrame(timestampToFrame(videoRef.current.currentTime, fps));
+  };
+
   const stepFrame = (offset: number) => {
-    setCurrentFrame((value) => Math.max(0, value + offset));
+    seekToFrame(currentFrame + offset);
   };
 
   const selectNeighbor = (frame: NearbyFrame) => {
-    setCurrentFrame(frame.frame);
+    seekToFrame(frame.frame);
   };
 
   return (
@@ -71,7 +79,16 @@ export function VideoModal({
         <div className="grid gap-4 p-4 lg:grid-cols-[1fr_270px]">
           <div className="overflow-hidden rounded-3xl bg-slate-950">
             <div className="relative aspect-video bg-slate-950">
-              <video ref={videoRef} src={item.videoUrl} className="h-full w-full object-contain" controls preload="metadata" />
+              <video
+                ref={videoRef}
+                src={item.videoUrl}
+                className="h-full w-full object-contain"
+                controls
+                preload="metadata"
+                onLoadedMetadata={() => seekToFrame(item.frame)}
+                onTimeUpdate={syncFrameFromVideo}
+                onSeeked={syncFrameFromVideo}
+              />
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 text-white">
                 <div className="mb-3 flex items-center justify-center gap-2">
                   <Button size="icon" onClick={() => stepFrame(-1)} className="pointer-events-auto rounded-full bg-white text-slate-950 hover:bg-slate-100">
