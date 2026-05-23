@@ -50,6 +50,7 @@ export type BackendSearchResult = {
   frame_number?: number;
   start_seconds?: number;
   start?: number;
+  time_ms?: number;
   fps?: number;
   clip_score?: number;
   visual_score?: number;
@@ -65,6 +66,14 @@ export type BackendSearchResult = {
   sources?: string[];
   source_scores?: Record<string, number>;
   source_ranks?: Record<string, number>;
+  neighbors?: Array<{
+    video_id: string;
+    label: string;
+    offset_seconds: number;
+    frame_number: number;
+    timestamp: number;
+    time_ms: number;
+  }>;
   ocr_text?: string;
   transcript_text?: string;
   caption_text?: string;

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend import config
 from backend.retrieval_system import VideoRetrievalSystem
+from utils.query_processing import decompose_query
 from utils.video_metadata import load_video_metadata
 
 log_file = "system.log"
@@ -44,6 +45,11 @@ app = Flask(__name__,
             static_folder=os.path.join(ROOT_DIR, 'static'))
 
 VIDEO_METADATA = load_video_metadata(config.VIDEOS_DIR)
+runtime_evaluation_config = {
+    "sessionId": config.SESSION_ID,
+    "evaluationId": config.EVALUATION_ID,
+    "evalServerUrl": config.EVAL_SERVER_URL.rstrip("/"),
+}
 
 try:
     import psutil
@@ -172,6 +178,76 @@ def search_api():
         return jsonify({"error": "An internal error occurred during search."}), 500
 
 
+def _candidate_reason(item: dict) -> str:
+    sources = item.get("sources") or [item.get("source_type") or item.get("doc_type")]
+    source_text = ", ".join(str(source) for source in sources if source)
+    evidence = item.get("ocr_text") or item.get("transcript_text") or item.get("caption_text") or item.get("text")
+    if evidence:
+        return f"Matched by {source_text}: {str(evidence)[:180]}"
+    return f"Matched by {source_text or 'retrieval signals'}."
+
+
+@app.route("/api/agent/solve", methods=["POST"])
+def agent_solve_api():
+    """Assistant-style retrieval endpoint for automatic-mode experiments."""
+
+    if not search_system:
+        return jsonify({"error": "Search system is not available."}), 500
+
+    data = request.get_json(silent=True) or {}
+    query = data.get("query") or data.get("description") or ""
+    if not str(query).strip():
+        return jsonify({"error": "Missing query"}), 400
+
+    auto_submit = bool(data.get("auto_submit", False))
+    if auto_submit:
+        return jsonify({
+            "error": "auto_submit is disabled by default for safety. Review candidates manually first."
+        }), 400
+
+    top_k = data.get("top_k", 10)
+    try:
+        top_k = max(1, min(50, int(top_k)))
+    except (TypeError, ValueError):
+        top_k = 10
+
+    plan = decompose_query(str(query))
+    payload = {
+        "description": plan.visual_query,
+        "ocr": data.get("ocr") or plan.ocr_query,
+        "transcript": data.get("transcript") or plan.transcript_query,
+        "negative": data.get("negative") or plan.negative_query,
+        "neighbor_seconds": data.get("neighbor_seconds") or [-5, -3, 0, 3, 5],
+        "rerank_top_k": data.get("rerank_top_k", config.RERANK_TOP_K),
+    }
+    results = search_system.hybrid_search(payload)[:top_k]
+    candidates = []
+    for item in results:
+        candidates.append({
+            "video_id": item.get("video_id"),
+            "keyframe_index": item.get("keyframe_index"),
+            "frame_number": item.get("frame_number"),
+            "start_seconds": item.get("start_seconds", item.get("start")),
+            "time_ms": item.get("time_ms"),
+            "fps": item.get("fps"),
+            "score": item.get("rerank_score", item.get("fusion_score")),
+            "sources": item.get("sources", []),
+            "source_scores": item.get("source_scores", {}),
+            "neighbors": item.get("neighbors", []),
+            "reason": _candidate_reason(item),
+        })
+
+    return jsonify({
+        "query_plan": {
+            "visual_query": plan.visual_query,
+            "ocr_query": plan.ocr_query,
+            "transcript_query": plan.transcript_query,
+            "negative_query": plan.negative_query,
+        },
+        "candidates": candidates,
+    })
+
+
 @app.route("/keyframes/<string:video_id>/keyframe_<int:keyframe_index>.webp")
 def serve_frame_image(video_id, keyframe_index):
     try:
@@ -228,8 +304,8 @@ def login_proxy():
     """
     try:
         # Lấy trực tiếp từ config
-        session_id = config.SESSION_ID
-        evaluation_id = config.EVALUATION_ID
+        session_id = runtime_evaluation_config.get("sessionId") or config.SESSION_ID
+        evaluation_id = runtime_evaluation_config.get("evaluationId") or config.EVALUATION_ID
         
         logger.info(f"[LOGIN] Returning session ID: {session_id}")
         logger.info(f"[LOGIN] Returning evaluation ID: {evaluation_id}")
@@ -237,12 +313,44 @@ def login_proxy():
         return jsonify({
             "message": "Connected",
             "sessionId": session_id,
-            "evaluationId": evaluation_id
+            "evaluationId": evaluation_id,
+            "evalServerUrl": runtime_evaluation_config.get("evalServerUrl") or config.EVAL_SERVER_URL,
         })
 
     except Exception as e:
         logger.error(f"Login error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evaluation-config", methods=["GET", "POST"])
+def evaluation_config_api():
+    """Read/update evaluation credentials without restarting backend."""
+
+    if request.method == "GET":
+        return jsonify(runtime_evaluation_config)
+
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get("sessionId") or "").strip()
+    evaluation_id = str(data.get("evaluationId") or "").strip()
+    eval_server_url = str(data.get("evalServerUrl") or "").strip()
+
+    if session_id:
+        runtime_evaluation_config["sessionId"] = session_id
+    if evaluation_id:
+        runtime_evaluation_config["evaluationId"] = evaluation_id
+    if eval_server_url:
+        runtime_evaluation_config["evalServerUrl"] = eval_server_url.rstrip("/")
+
+    logger.info(
+        "[EVAL_CONFIG] Updated runtime evaluation config: evaluationId=%s, server=%s",
+        runtime_evaluation_config.get("evaluationId"),
+        runtime_evaluation_config.get("evalServerUrl"),
+    )
+
+    return jsonify({
+        "message": "Evaluation config updated",
+        **runtime_evaluation_config,
+    })
 
 
 @app.route("/api/submit", methods=["POST"])
@@ -254,8 +362,8 @@ def submit_proxy():
         data = request.get_json()
         logger.info(f"[SUBMIT] Received data: {data}")
         
-        session_id = data.get("sessionId")
-        evaluation_id = data.get("evaluationId")
+        session_id = data.get("sessionId") or runtime_evaluation_config.get("sessionId")
+        evaluation_id = data.get("evaluationId") or runtime_evaluation_config.get("evaluationId")
         video_id = data.get("videoId")
         time_ms = data.get("timeMs")  # Thời gian tính bằng milliseconds
 
@@ -270,7 +378,12 @@ def submit_proxy():
             logger.error(f"[SUBMIT] Missing required fields: {missing}")
             return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
 
-        submit_url = f"{config.EVAL_SERVER_URL}/api/v2/submit/{evaluation_id}"
+        eval_server_url = (
+            data.get("evalServerUrl")
+            or runtime_evaluation_config.get("evalServerUrl")
+            or config.EVAL_SERVER_URL
+        ).rstrip("/")
+        submit_url = f"{eval_server_url}/api/v2/submit/{evaluation_id}"
 
         payload = {
             "answerSets": [
@@ -308,14 +421,14 @@ def submit_proxy():
                     response.status_code,
                 )
         except requests.exceptions.Timeout:
-            logger.error(f"[SUBMIT] Timeout connecting to {config.EVAL_SERVER_URL}")
+            logger.error(f"[SUBMIT] Timeout connecting to {eval_server_url}")
             return jsonify({
-                "error": f"Evaluation server timeout. Cannot submit to {config.EVAL_SERVER_URL}"
+                "error": f"Evaluation server timeout. Cannot submit to {eval_server_url}"
             }), 503
         except requests.exceptions.ConnectionError as e:
             logger.error(f"[SUBMIT] Connection error: {e}")
             return jsonify({
-                "error": f"Cannot connect to evaluation server at {config.EVAL_SERVER_URL}. Please check network or server status."
+                "error": f"Cannot connect to evaluation server at {eval_server_url}. Please check network or server status."
             }), 503
 
     except Exception as e:

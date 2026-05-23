@@ -14,6 +14,7 @@ import { ResultGrid } from "@/features/retrieval/components/ResultGrid";
 import { SearchHeader } from "@/features/retrieval/components/SearchHeader";
 import { VideoList } from "@/features/retrieval/components/VideoList";
 import { VideoModal } from "@/features/retrieval/components/VideoModal";
+import { EvaluationConfigBar } from "@/features/retrieval/components/EvaluationConfigBar";
 
 function splitHints(value: string) {
   return value
@@ -129,6 +130,8 @@ export function RetrievalPage() {
           onSearch={doSearch}
           onReset={resetFilters}
         />
+
+        <EvaluationConfigBar />
 
         {pinnedResults.length > 0 && (
           <section className="flex shrink-0 items-center gap-2 overflow-x-auto rounded-2xl bg-white/95 p-2 shadow-sm ring-1 ring-slate-200">

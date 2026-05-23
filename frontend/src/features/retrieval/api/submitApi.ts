@@ -1,8 +1,10 @@
 import { apiFetch } from "@/lib/apiClient";
+import { getStoredEvaluationConfig, storeEvaluationConfig } from "./evaluationConfigApi";
 
 type LoginResponse = {
   sessionId: string;
   evaluationId: string;
+  evalServerUrl?: string;
 };
 
 type SubmitResponse = {
@@ -19,22 +21,25 @@ export async function loginEvaluation(): Promise<LoginResponse> {
 }
 
 export async function submitFrame(videoId: string, timeMs: number): Promise<SubmitResponse> {
-  const sessionId = localStorage.getItem("sessionId");
-  const evaluationId = localStorage.getItem("evaluationId");
+  let { sessionId, evaluationId, evalServerUrl } = getStoredEvaluationConfig();
   if (!sessionId || !evaluationId) {
     const login = await loginEvaluation();
-    localStorage.setItem("sessionId", login.sessionId);
-    localStorage.setItem("evaluationId", login.evaluationId);
+    storeEvaluationConfig({
+      sessionId: login.sessionId,
+      evaluationId: login.evaluationId,
+      evalServerUrl: login.evalServerUrl || evalServerUrl,
+    });
+    ({ sessionId, evaluationId, evalServerUrl } = getStoredEvaluationConfig());
   }
 
   return apiFetch<SubmitResponse>("/api/submit", {
     method: "POST",
     body: JSON.stringify({
-      sessionId: localStorage.getItem("sessionId"),
-      evaluationId: localStorage.getItem("evaluationId"),
+      sessionId,
+      evaluationId,
+      evalServerUrl,
       videoId,
       timeMs,
     }),
   });
 }
-

@@ -16,7 +16,7 @@ from backend import config
 from utils.elasticsearch_client import get_elasticsearch_client
 from utils.fusion import legacy_intersection, rrf_fusion
 from utils.dense_text_encoder import DenseTextEncoder
-from utils.query_processing import build_query_plan
+from utils.query_processing import build_query_plan, decompose_query
 from utils.reranker import OptionalReranker
 from utils.text_encoder import TextEncoder
 from utils.translator import QueryTranslator
@@ -25,6 +25,7 @@ from utils.video_metadata import load_video_metadata
 logger = logging.getLogger(__name__)
 
 _KEYFRAME_MAP_DIR = Path(config.KEYFRAMES_DIR) / "maps"
+DEFAULT_NEIGHBOR_SECONDS = [-5, -3, 0, 3, 5]
 
 
 @lru_cache(maxsize=2048)
@@ -186,6 +187,87 @@ class VideoRetrievalSystem:
             item.setdefault("start", start_seconds)
             item.setdefault("start_seconds", start_seconds)
             item.setdefault("frame_number", original_frame)
+        self._attach_submit_time(item)
+        return item
+
+    def _is_transcript_only(self, item: dict[str, Any]) -> bool:
+        sources = {str(source).lower() for source in item.get("sources") or []}
+        doc_type = str(item.get("doc_type") or item.get("source_type") or "").lower()
+        if sources:
+            return doc_type == "transcript" and sources.issubset({"transcript", "text_dense", "text"})
+        return doc_type in {"transcript", "asr", "transcript_csv"}
+
+    def _attach_submit_time(self, item: dict[str, Any]) -> dict[str, Any]:
+        fps = item.get("fps") or config.DEFAULT_FALLBACK_FPS
+        try:
+            fps_value = float(fps)
+        except (TypeError, ValueError):
+            fps_value = config.DEFAULT_FALLBACK_FPS
+        if fps_value <= 0:
+            fps_value = config.DEFAULT_FALLBACK_FPS
+
+        if self._is_transcript_only(item):
+            try:
+                start_seconds = float(item.get("start_seconds", item.get("start", 0)) or 0)
+                item["time_ms"] = int(round(max(0.0, start_seconds) * 1000))
+                return item
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            frame_number = int(item.get("frame_number"))
+            item["time_ms"] = int(round((frame_number / fps_value) * 1000))
+        except (TypeError, ValueError):
+            try:
+                start_seconds = float(item.get("start_seconds", item.get("start", 0)) or 0)
+                item["time_ms"] = int(round(max(0.0, start_seconds) * 1000))
+            except (TypeError, ValueError):
+                item["time_ms"] = 0
+        return item
+
+    def _attach_neighbors(self, item: dict[str, Any], offsets: list[int | float] | None = None) -> dict[str, Any]:
+        video_id = item.get("video_id")
+        if not video_id:
+            item["neighbors"] = []
+            return item
+
+        fps = item.get("fps") or self.video_fps.get(video_id, config.DEFAULT_FALLBACK_FPS)
+        try:
+            fps_value = float(fps)
+        except (TypeError, ValueError):
+            fps_value = config.DEFAULT_FALLBACK_FPS
+        if fps_value <= 0:
+            fps_value = config.DEFAULT_FALLBACK_FPS
+
+        try:
+            center_seconds = float(item.get("time_ms", 0)) / 1000.0
+        except (TypeError, ValueError):
+            center_seconds = float(item.get("start_seconds", item.get("start", 0)) or 0)
+
+        neighbors = []
+        for offset in offsets or DEFAULT_NEIGHBOR_SECONDS:
+            try:
+                offset_value = float(offset)
+            except (TypeError, ValueError):
+                continue
+            timestamp = max(0.0, center_seconds + offset_value)
+            frame_number = int(round(timestamp * fps_value))
+            time_ms = int(round((frame_number / fps_value) * 1000))
+            if offset_value == 0:
+                label = "current"
+            else:
+                label = f"{offset_value:+.0f}s"
+            neighbors.append(
+                {
+                    "video_id": video_id,
+                    "label": label,
+                    "offset_seconds": offset_value,
+                    "frame_number": frame_number,
+                    "timestamp": time_ms / 1000.0,
+                    "time_ms": time_ms,
+                }
+            )
+        item["neighbors"] = neighbors
         return item
 
     def clip_search(self, query: str = "", max_results: int | None = None) -> list[dict[str, Any]]:
@@ -230,7 +312,7 @@ class VideoRetrievalSystem:
                 start_seconds, original_frame = self._resolve_frame_info(video_id, keyframe_index)
                 score = float(hit.distance)
                 results.append(
-                    {
+                    self._with_video_metadata({
                         "video_id": video_id,
                         "keyframe_index": keyframe_index,
                         "frame_number": original_frame,
@@ -239,7 +321,7 @@ class VideoRetrievalSystem:
                         "clip_score": score,
                         "visual_score": score,
                         "source_type": "visual",
-                    }
+                    })
                 )
 
         logger.info("Dense visual search found %s keyframes.", len(results))
@@ -430,15 +512,20 @@ class VideoRetrievalSystem:
     def hybrid_search(self, query_data: dict[str, Any]) -> list[dict[str, Any]]:
         """Run dense + sparse retrieval, then fuse results with RRF."""
 
-        description = query_data.get("description") or query_data.get("query") or ""
-        transcript = query_data.get("transcript") or query_data.get("audio") or ""
-        ocr = query_data.get("ocr") or ""
+        raw_description = query_data.get("description") or query_data.get("query") or ""
+        decomposition = decompose_query(raw_description)
+        description = query_data.get("visual_query")
+        if description is None:
+            description = decomposition.visual_query
+        transcript = query_data.get("transcript") or query_data.get("audio") or decomposition.transcript_query or ""
+        ocr = query_data.get("ocr") or decomposition.ocr_query or ""
         caption = query_data.get("caption") or ""
+        negative = query_data.get("negative") or decomposition.negative_query or ""
         translated = query_data.get("translated") or query_data.get("query_en")
         if not translated and description and config.ENABLE_QUERY_TRANSLATION:
             translated = self.translator.translate_vi_to_en(description)
 
-        primary_query = description or transcript or ocr or caption
+        primary_query = raw_description or description or transcript or ocr or caption
         query_plan = build_query_plan(primary_query, translated_query=translated)
         visual_query = translated or description
 
@@ -516,8 +603,16 @@ class VideoRetrievalSystem:
             item.setdefault("query_language", query_plan.language_hint)
             item.setdefault("query_original", primary_query)
             item.setdefault("query_visual", visual_query)
+            item.setdefault("query_decomposition", {
+                "visual_query": description,
+                "ocr_query": ocr,
+                "transcript_query": transcript,
+                "negative_query": negative,
+            })
             if translated:
                 item.setdefault("query_translated", translated)
+            self._attach_submit_time(item)
+            self._attach_neighbors(item, query_data.get("neighbor_seconds") or DEFAULT_NEIGHBOR_SECONDS)
 
         rerank_top_k = query_data.get("rerank_top_k", config.RERANK_TOP_K)
         try:
