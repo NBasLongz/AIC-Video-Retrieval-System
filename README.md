@@ -101,6 +101,15 @@ python -m backend.ingest_data
 python -m scripts.validate_pipeline --check-services
 ```
 
+Sau khi đổi visual model hoặc `VECTOR_DIMENSION`, pipeline tự xử lý các phần liên quan:
+
+- `scripts.compute_embeddings` mặc định xóa `keyframe_*.pt` cũ trong từng video trước khi ghi embedding mới, để không còn vector stale.
+- `_metadata.json` ghi `provider`, `model_name`, `vector_dimension`, `truncate_dim`, `normalized`.
+- `backend.ingest_data` mặc định drop/recreate Milvus collection rồi ingest lại embedding hiện tại.
+- `scripts.validate_pipeline` báo lỗi nếu metadata/vector/keyframe count không khớp config hiện tại.
+
+Chỉ dùng `--keep-existing` hoặc `--append-milvus` khi bạn chắc chắn không đổi model và muốn append thủ công.
+
 Nếu dùng Docker backend:
 
 ```powershell
@@ -188,6 +197,8 @@ Query tiếng Việt trên UI
 ```
 
 Lưu ý rất quan trọng: đổi từ OpenCLIP 512d hoặc Jina 1024d sang SigLIP2 1152d thì phải **recompute embeddings** và **recreate Milvus collection**. Hệ thống có guard dimension; nếu collection cũ khác 1152d, ingest/search sẽ báo lỗi thay vì search sai âm thầm.
+
+Trong code hiện tại, hai bước này đã được nối vào pipeline: `compute_embeddings` tự dọn embedding cũ theo video, còn `backend.ingest_data` tự recreate Milvus collection mặc định. Vì vậy sau khi đổi model, chỉ cần chạy lại full pipeline phía trên.
 
 ### 4. Extract transcript bằng ASR
 

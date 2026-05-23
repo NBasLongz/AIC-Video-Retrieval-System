@@ -51,11 +51,28 @@ def _write_embedding_metadata(output_dir: Path, num_keyframes: int) -> None:
         "model_name": config.VISUAL_MODEL_NAME,
         "pretrained": config.VISUAL_MODEL_PRETRAINED,
         "vector_dimension": config.VECTOR_DIMENSION,
+        "truncate_dim": config.VISUAL_TRUNCATE_DIM,
         "normalized": True,
         "num_keyframes": num_keyframes,
     }
     with (output_dir / "_metadata.json").open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, ensure_ascii=False, indent=2)
+
+
+def _safe_clear_embedding_dir(output_dir: Path) -> None:
+    """Remove stale embeddings for one video before recomputing a model profile."""
+
+    root = Path(config.CLIP_FEATURES_DIR).resolve()
+    output_dir = output_dir.resolve()
+    if root not in output_dir.parents and output_dir != root:
+        raise ValueError(f"Refusing to clear embeddings outside configured root: {output_dir}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for path in output_dir.glob("keyframe_*.pt"):
+        path.unlink()
+    metadata_path = output_dir / "_metadata.json"
+    if metadata_path.exists():
+        metadata_path.unlink()
 
 
 class ImageEncoder:
@@ -286,7 +303,8 @@ class ImageEncoder:
 def compute_embeddings_for_video(
     video_id: str, 
     encoder: ImageEncoder, 
-    batch_size: int = 16
+    batch_size: int = 16,
+    clean_existing: bool = True,
 ):
     """
     Compute embeddings for all keyframes of a video.
@@ -315,8 +333,10 @@ def compute_embeddings_for_video(
     
     logger.info(f"Processing {len(keyframe_files)} keyframes for video {video_id}")
     
-    # Create output directory
-    embeddings_dir.mkdir(parents=True, exist_ok=True)
+    if clean_existing:
+        _safe_clear_embedding_dir(embeddings_dir)
+    else:
+        embeddings_dir.mkdir(parents=True, exist_ok=True)
     
     # Process in batches
     for i in tqdm(range(0, len(keyframe_files), batch_size), desc=f"Encoding {video_id}"):
@@ -352,7 +372,12 @@ def compute_embeddings_for_video(
     return True
 
 
-def process_all_videos(batch_size: int = 16, device: str = None, num_workers: int = None):
+def process_all_videos(
+    batch_size: int = 16,
+    device: str = None,
+    num_workers: int = None,
+    clean_existing: bool = True,
+):
     """Process all videos with keyframes."""
     keyframes_root = Path(config.KEYFRAMES_DIR)
     
@@ -380,7 +405,12 @@ def process_all_videos(batch_size: int = 16, device: str = None, num_workers: in
     
     for video_dir in video_dirs:
         video_id = video_dir.name
-        compute_embeddings_for_video(video_id, encoder, batch_size)
+        compute_embeddings_for_video(
+            video_id,
+            encoder,
+            batch_size,
+            clean_existing=clean_existing,
+        )
 
 
 def main():
@@ -410,15 +440,30 @@ def main():
         default=4,
         help="Number of worker threads for image preprocessing (default: 4)",
     )
+    parser.add_argument(
+        "--keep-existing",
+        action="store_true",
+        help="Do not clear old keyframe_*.pt files before recomputing. Not recommended after model changes.",
+    )
     
     args = parser.parse_args()
     
     if args.video:
         encoder = ImageEncoder(device=args.device, num_workers=args.workers)
-        compute_embeddings_for_video(args.video, encoder, args.batch_size)
+        compute_embeddings_for_video(
+            args.video,
+            encoder,
+            args.batch_size,
+            clean_existing=not args.keep_existing,
+        )
     else:
         # Pass worker count into the global encoder creation
-        process_all_videos(args.batch_size, device=args.device, num_workers=args.workers)
+        process_all_videos(
+            args.batch_size,
+            device=args.device,
+            num_workers=args.workers,
+            clean_existing=not args.keep_existing,
+        )
 
 
 if __name__ == "__main__":

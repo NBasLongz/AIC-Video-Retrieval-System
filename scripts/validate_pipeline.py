@@ -169,6 +169,21 @@ def validate_embeddings(report: ValidationReport):
                     report.error(
                         f"{video_dir.name}: metadata dim={meta_dim} != config.VECTOR_DIMENSION={config.VECTOR_DIMENSION}"
                     )
+                if metadata.get("provider") != config.VISUAL_MODEL_PROVIDER:
+                    report.error(
+                        f"{video_dir.name}: metadata provider={metadata.get('provider')} "
+                        f"!= config.VISUAL_MODEL_PROVIDER={config.VISUAL_MODEL_PROVIDER}"
+                    )
+                if metadata.get("model_name") != config.VISUAL_MODEL_NAME:
+                    report.error(
+                        f"{video_dir.name}: metadata model={metadata.get('model_name')} "
+                        f"!= config.VISUAL_MODEL={config.VISUAL_MODEL_NAME}"
+                    )
+                if int(metadata.get("truncate_dim") or metadata.get("vector_dimension") or 0) != config.VISUAL_TRUNCATE_DIM:
+                    report.error(
+                        f"{video_dir.name}: metadata truncate_dim={metadata.get('truncate_dim')} "
+                        f"!= config.VISUAL_TRUNCATE_DIM={config.VISUAL_TRUNCATE_DIM}"
+                    )
             except Exception as exc:
                 report.warn(f"{video_dir.name}: invalid embedding metadata: {exc}")
         else:
@@ -194,6 +209,16 @@ def validate_embeddings(report: ValidationReport):
             elif abs(norm - 1.0) > 0.05:
                 report.warn(f"{pt_path}: embedding norm {norm:.4f} is not close to 1.0")
             checked += 1
+
+        keyframe_dir = Path(config.KEYFRAMES_DIR) / video_dir.name
+        if keyframe_dir.exists():
+            keyframe_count = len(list(keyframe_dir.glob("keyframe_*.webp")))
+            embedding_count = len(list(video_dir.glob("keyframe_*.pt")))
+            if keyframe_count != embedding_count:
+                report.error(
+                    f"{video_dir.name}: embedding files ({embedding_count}) != keyframes ({keyframe_count}); "
+                    "rerun scripts.compute_embeddings without --keep-existing"
+                )
 
     report.note(f"Checked {checked} embedding files")
 

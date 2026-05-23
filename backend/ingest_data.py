@@ -92,13 +92,13 @@ def setup_milvus_collection(collection_name, schema, index_field, index_params, 
         count = collection.num_entities
         existing_dim = _collection_vector_dim(collection, index_field)
         if existing_dim is not None and existing_dim != config.VECTOR_DIMENSION:
-            raise ValueError(
+            logger.warning(
                 f"Milvus collection '{collection_name}' vector dim is {existing_dim}, "
                 f"but config.VECTOR_DIMENSION is {config.VECTOR_DIMENSION}. "
-                "Drop/recreate the collection or restore the matching model config."
+                "Recreating collection to match the active embedding model."
             )
-        
-        if skip_if_exists and count > 0:
+            utility.drop_collection(collection_name)
+        elif skip_if_exists and count > 0:
             logger.info(f"Collection '{collection_name}' already exists with {count} entities. Skipping recreation.")
             return collection
         else:
@@ -565,6 +565,11 @@ def main():
         help="Bỏ qua ingest keyframe embeddings vào Milvus."
     )
     parser.add_argument(
+        "--append-milvus",
+        action="store_true",
+        help="Keep existing Milvus data. Not recommended after embedding model changes.",
+    )
+    parser.add_argument(
         "--skip-ocr",
         action="store_true",
         help="Bỏ qua ingest OCR artifacts."
@@ -623,9 +628,10 @@ def main():
             config.KEYFRAME_COLLECTION_NAME,
             kf_schema,
             "keyframe_vector",
-            kf_index_params
+            kf_index_params,
+            skip_if_exists=args.append_milvus,
         )
-        ingest_keyframe_data(kf_collection)
+        ingest_keyframe_data(kf_collection, skip_if_has_data=args.append_milvus)
     else:
         logger.info("Bỏ qua ingest Milvus theo yêu cầu.")
 
