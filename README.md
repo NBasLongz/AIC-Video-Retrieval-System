@@ -71,22 +71,47 @@ flowchart LR
 | Config | [backend/config.py](backend/config.py) | Đọc từ `.env`/environment variables |
 | Ingest Milvus/ES | [backend/ingest_data.py](backend/ingest_data.py) | Đã có |
 | Keyframe extraction | [scripts/extract_keyframes.py](scripts/extract_keyframes.py) | Đã có |
-| CLIP embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | Đã có baseline |
+| Visual embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | Jina CLIP v2 1024d mặc định, OpenCLIP dùng làm fallback |
 | Whisper transcript | [scripts/extract_transcripts.py](scripts/extract_transcripts.py) | Đã có |
 | Web UI | [frontend](frontend) | React + Vite + TypeScript |
 | Docker DB | [docker-compose.yml](docker-compose.yml) | Milvus + Elasticsearch |
 
 Điểm đã nâng cấp và cần tiếp tục benchmark:
 
-- Visual model hiện là `OpenCLIP ViT-B-32`, chỉ nên xem là baseline.
+- Visual model mặc định đã chuyển sang `jinaai/jina-clip-v2` 1024d để ưu tiên truy vấn Việt-Anh và text-image retrieval.
 - OCR/transcript/caption đã có nhánh search riêng, cần benchmark trọng số theo từng bộ video.
 - Fusion đã có RRF/hybrid, nhưng nên đo `nDCG@10`, `MRR@10`, `Recall@50` và latency theo từng tầng.
-- Reranker đã có hook `rerank_top_k`, cần thử MiniLM/DeBERTa reranker và bật/tắt theo toggle frontend.
-- Backend/model serving nên tiếp tục container hóa GPU nếu chuyển sang SigLIP2, jina-clip-v2, PaddleOCR hoặc faster-whisper.
+- Reranker mặc định dùng `BAAI/bge-reranker-v2-m3` qua `sentence-transformers`, frontend có toggle `Rerank Top-K`.
+- Backend/model serving đã có Docker GPU profile; cần đảm bảo máy đã có NVIDIA Container Toolkit và đủ VRAM.
 
 ## Luồng Xử Lý Offline
 
 Offline ingestion là phần chuẩn bị dữ liệu trước khi thi hoặc trước khi search. Làm tốt phần này thì online search mới nhanh.
+
+### Lệnh chạy full pipeline khuyến nghị
+
+```powershell
+docker compose up -d etcd minio standalone elasticsearch redis
+
+python -m scripts.extract_keyframes --method interval --interval 2.0 --resume
+python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
+python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
+python -m scripts.compute_embeddings --batch-size 32 --device cuda
+python -m backend.ingest_data
+python -m scripts.validate_pipeline --check-services
+```
+
+Nếu dùng Docker backend:
+
+```powershell
+docker compose --profile api up --build
+```
+
+Backend có endpoint kiểm nhanh cấu hình thực tế:
+
+```text
+GET /api/health
+```
 
 ### 1. Chuẩn bị video
 
@@ -139,23 +164,24 @@ data/embeddings/L01_V001/keyframe_0.pt
 data/embeddings/L01_V001/keyframe_1.pt
 ```
 
-Model hiện tại là `OpenCLIP ViT-B-32`. Đây là baseline nhanh, nhẹ, dễ chạy. Khi cần tăng accuracy, nên nâng theo thứ tự:
+Model mặc định cho profile thi đấu là:
 
 ```text
-OpenCLIP ViT-B-32
--> SigLIP2 base
--> SigLIP2 so400m
--> jina-clip-v2 nếu cần multilingual image-text mạnh hơn
+VISUAL_MODEL_PROVIDER=jina_clip
+VISUAL_MODEL=jinaai/jina-clip-v2
+VECTOR_DIMENSION=1024
+VISUAL_TRUNCATE_DIM=1024
+MODEL_TRUST_REMOTE_CODE=true
 ```
 
-Lưu ý: embedding từ model khác nhau không nên trộn chung một collection nếu chưa lưu `model_name`, `dimension`, `normalized`.
+Lưu ý rất quan trọng: đổi từ OpenCLIP 512d sang Jina CLIP v2 1024d thì phải **recompute embeddings** và **recreate Milvus collection**. Hệ thống có guard dimension; nếu collection cũ là 512d mà config là 1024d, ingest/search sẽ báo lỗi thay vì search sai âm thầm.
 
 ### 4. Extract transcript bằng ASR
 
-Hiện có:
+Mặc định thi đấu:
 
 ```powershell
-python -m scripts.run_transcript_pipeline --model large --language vi
+python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
 ```
 
 Khuyến nghị thi đấu:

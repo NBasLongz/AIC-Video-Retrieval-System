@@ -108,6 +108,8 @@ class ImageEncoder:
                         delattr(self.model, attr_name)
                     except AttributeError:
                         pass
+        elif self.provider in {"jina_clip", "jina"}:
+            self._load_jina_clip_model()
         else:
             self._load_transformers_visual_model()
         
@@ -143,6 +145,29 @@ class ImageEncoder:
             trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
         )
         self._move_model_to_device()
+
+    def _load_jina_clip_model(self):
+        try:
+            from transformers import AutoModel
+        except ImportError as exc:
+            raise ImportError(
+                "jina-clip-v2 requires transformers. Install requirements.txt first."
+            ) from exc
+
+        self.model = AutoModel.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+            dtype="auto",
+        )
+        self._move_model_to_device()
+
+    def _to_numpy(self, features) -> np.ndarray:
+        if isinstance(features, torch.Tensor):
+            features = features.detach()
+            if features.device.type != "cpu":
+                features = features.cpu()
+            return features.numpy().astype(np.float32)
+        return np.asarray(features, dtype=np.float32)
     
     @torch.no_grad()
     def encode_image(self, image_path: Path) -> np.ndarray:
@@ -160,6 +185,11 @@ class ImageEncoder:
             if self.provider == "openclip":
                 image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
                 image_features = self.model.encode_image(image_tensor)
+            elif self.provider in {"jina_clip", "jina"}:
+                image_features = self.model.encode_image(
+                    [image],
+                    truncate_dim=config.VISUAL_TRUNCATE_DIM,
+                )
             else:
                 inputs = self.processor(images=[image], return_tensors="pt")
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
@@ -173,10 +203,8 @@ class ImageEncoder:
                     if image_features is None:
                         image_features = outputs.last_hidden_state[:, 0]
             
-            # Move to CPU and normalize
-            if self.device == "cuda":
-                image_features = image_features.cpu()
-            
+            image_features = self._to_numpy(image_features)
+            image_features = torch.from_numpy(image_features)
             image_features = F.normalize(image_features, p=2, dim=-1)
             return image_features.numpy().astype(np.float32)
         
@@ -219,6 +247,11 @@ class ImageEncoder:
         if self.provider == "openclip":
             image_batch = torch.stack(images).to(self.device)
             image_features = self.model.encode_image(image_batch)
+        elif self.provider in {"jina_clip", "jina"}:
+            image_features = self.model.encode_image(
+                images,
+                truncate_dim=config.VISUAL_TRUNCATE_DIM,
+            )
         else:
             inputs = self.processor(images=images, return_tensors="pt")
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
@@ -232,10 +265,8 @@ class ImageEncoder:
                 if image_features is None:
                     image_features = outputs.last_hidden_state[:, 0]
         
-        # Move to CPU and normalize
-        if self.device == "cuda":
-            image_features = image_features.cpu()
-        
+        image_features = self._to_numpy(image_features)
+        image_features = torch.from_numpy(image_features)
         image_features = F.normalize(image_features, p=2, dim=-1)
         return image_features.numpy().astype(np.float32)
 

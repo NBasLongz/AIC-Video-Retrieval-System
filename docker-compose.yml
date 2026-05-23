@@ -79,6 +79,17 @@ services:
       MILVUS_HOST: standalone
       ELASTIC_HOST: elasticsearch
       REDIS_URL: redis://redis:6379/0
+      VISUAL_MODEL_PROVIDER: jina_clip
+      VISUAL_MODEL: jinaai/jina-clip-v2
+      VECTOR_DIMENSION: 1024
+      VISUAL_TRUNCATE_DIM: 1024
+      MODEL_TRUST_REMOTE_CODE: "true"
+      ASR_MODEL: large-v3
+      ASR_LANGUAGE: vi
+      OCR_ENGINE: paddleocr
+      OCR_LANGUAGES: en,vi
+      RERANK_MODEL_PROVIDER: sentence_transformers
+      RERANK_MODEL: BAAI/bge-reranker-v2-m3
     volumes:
       - ./data:/app/data
     ports:

@@ -85,6 +85,35 @@ def frontend_assets(filename):
     return send_from_directory(os.path.join(FRONTEND_DIST, "assets"), filename)
 
 
+@app.route("/api/health")
+def health_api():
+    return jsonify({
+        "ok": search_system is not None,
+        "search_system": search_system is not None,
+        "milvus": {
+            "host": config.MILVUS_HOST,
+            "port": config.MILVUS_PORT,
+            "collection": config.KEYFRAME_COLLECTION_NAME,
+            "vector_dimension": config.VECTOR_DIMENSION,
+        },
+        "elasticsearch": {
+            "url": config.ELASTICSEARCH_URL,
+            "index": config.TRANSCRIPT_INDEX,
+        },
+        "models": {
+            "visual_provider": config.VISUAL_MODEL_PROVIDER,
+            "visual_model": config.VISUAL_MODEL_NAME,
+            "visual_truncate_dim": config.VISUAL_TRUNCATE_DIM,
+            "ocr_engine": config.OCR_ENGINE,
+            "ocr_languages": config.OCR_LANGUAGES,
+            "asr_model": config.ASR_MODEL,
+            "asr_language": config.ASR_LANGUAGE,
+            "rerank_provider": config.RERANK_MODEL_PROVIDER,
+            "rerank_model": config.RERANK_MODEL_NAME,
+        },
+    })
+
+
 @app.route("/search", methods=["POST"])
 def search_api():
     if not search_system:

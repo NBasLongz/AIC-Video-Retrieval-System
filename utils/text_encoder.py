@@ -31,6 +31,8 @@ class TextEncoder:
 
         if self.provider == "openclip":
             self._load_openclip()
+        elif self.provider in {"jina_clip", "jina"}:
+            self._load_jina_clip()
         else:
             self._load_transformers()
 
@@ -83,6 +85,23 @@ class TextEncoder:
             self.model_name,
             trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
         ).to(self.device)
+
+    def _load_jina_clip(self):
+        try:
+            from transformers import AutoModel
+        except ImportError as exc:
+            raise ImportError("jina-clip-v2 requires transformers. Install requirements.txt first.") from exc
+
+        logger.info(
+            "Loading Jina CLIP text model '%s' to device '%s'...",
+            self.model_name,
+            self.device,
+        )
+        self._model = AutoModel.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+            dtype="auto",
+        ).to(self.device)
     
     @property
     def model(self):
@@ -108,6 +127,8 @@ class TextEncoder:
         self._ensure_loaded()
         if self.provider == "openclip":
             return self._encode_openclip(query)
+        if self.provider in {"jina_clip", "jina"}:
+            return self._encode_jina_clip(query)
         return self._encode_transformers(query)
 
     def _encode_openclip(self, query: str):
@@ -118,6 +139,20 @@ class TextEncoder:
             if self.device == "cuda":
                 text_features = text_features.cpu()
             return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32)
+
+    def _encode_jina_clip(self, query: str):
+        with torch.no_grad():
+            text_features = self.model.encode_text(
+                query,
+                task="retrieval.query",
+                truncate_dim=config.VISUAL_TRUNCATE_DIM,
+            )
+            if isinstance(text_features, torch.Tensor):
+                if text_features.device.type != "cpu":
+                    text_features = text_features.cpu()
+                text_features = text_features.detach().numpy()
+            text_features = torch.from_numpy(np.asarray(text_features, dtype=np.float32)).reshape(1, -1)
+            return F.normalize(text_features, p=2, dim=-1).numpy().astype(np.float32)
 
     def _encode_transformers(self, query: str):
         inputs = self.processor(

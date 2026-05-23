@@ -47,8 +47,8 @@ MILVUS_HOST = _env("MILVUS_HOST", "localhost")
 MILVUS_PORT = _env("MILVUS_PORT", "19530")
 KEYFRAME_COLLECTION_NAME = _env("KEYFRAME_COLLECTION_NAME", "video_keyframes")
 
-# Keep this in sync with the active visual model. OpenCLIP ViT-B-32 is 512d.
-VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 512)
+# Keep this in sync with the active visual model. jina-clip-v2 full vectors are 1024d.
+VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 1024)
 
 # Compatibility aliases / service URLs (used by scripts expecting these names)
 ELASTICSEARCH_URL = _env("ELASTICSEARCH_URL", "http://localhost:9200")
@@ -70,11 +70,13 @@ CLIP_FEATURES_DIR = _env("EMBEDDINGS_DIR", str(DATA_DIR / "embeddings"))
 EMBEDDINGS_DIR = CLIP_FEATURES_DIR
 
 # --- Model registry ---
-# Baseline remains OpenCLIP so the current repo keeps working without new weights.
-VISUAL_MODEL_PROVIDER = _env("VISUAL_MODEL_PROVIDER", "openclip").lower()
-VISUAL_MODEL_NAME = _env("VISUAL_MODEL", _env("CLIP_MODEL_NAME", "ViT-B-32"))
-VISUAL_MODEL_PRETRAINED = _env("VISUAL_MODEL_PRETRAINED", _env("CLIP_PRETRAINED", "openai"))
-MODEL_TRUST_REMOTE_CODE = _env_bool("MODEL_TRUST_REMOTE_CODE", False)
+# Competition default: jina-clip-v2 gives a strong multilingual text-image space.
+# If you switch models, recompute embeddings and recreate the Milvus collection.
+VISUAL_MODEL_PROVIDER = _env("VISUAL_MODEL_PROVIDER", "jina_clip").lower()
+VISUAL_MODEL_NAME = _env("VISUAL_MODEL", _env("CLIP_MODEL_NAME", "jinaai/jina-clip-v2"))
+VISUAL_MODEL_PRETRAINED = _env("VISUAL_MODEL_PRETRAINED", _env("CLIP_PRETRAINED", ""))
+MODEL_TRUST_REMOTE_CODE = _env_bool("MODEL_TRUST_REMOTE_CODE", True)
+VISUAL_TRUNCATE_DIM = _env_int("VISUAL_TRUNCATE_DIM", VECTOR_DIMENSION)
 
 # Backwards-compatible names used by existing scripts.
 CLIP_MODEL_NAME = VISUAL_MODEL_NAME
@@ -82,9 +84,10 @@ CLIP_PRETRAINED = VISUAL_MODEL_PRETRAINED
 
 TEXT_MODEL_PROVIDER = _env("TEXT_MODEL_PROVIDER", "none").lower()
 TEXT_MODEL_NAME = _env("TEXT_MODEL", "BAAI/bge-m3")
-RERANK_MODEL_PROVIDER = _env("RERANK_MODEL_PROVIDER", "none").lower()
+RERANK_MODEL_PROVIDER = _env("RERANK_MODEL_PROVIDER", "sentence_transformers").lower()
 RERANK_MODEL_NAME = _env("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 ASR_MODEL = _env("ASR_MODEL", _env("WHISPER_MODEL", "large-v3"))
+ASR_LANGUAGE = _env("ASR_LANGUAGE", "vi")
 OCR_ENGINE = _env("OCR_ENGINE", "paddleocr").lower()
 OCR_LANGUAGES = [lang.strip() for lang in _env("OCR_LANGUAGES", "en,vi").split(",") if lang.strip()]
 

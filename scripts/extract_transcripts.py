@@ -246,7 +246,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="base",
+        default=config.ASR_MODEL,
         choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"],
         help="Whisper model size (default: base)"
     )
@@ -254,7 +254,7 @@ def main():
     parser.add_argument(
         "--language",
         type=str,
-        default=None,
+        default=config.ASR_LANGUAGE or None,
         help="Language code (e.g., 'en', 'vi', 'ja'). None = auto detect"
     )
     

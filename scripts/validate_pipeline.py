@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -197,6 +198,35 @@ def validate_embeddings(report: ValidationReport):
     report.note(f"Checked {checked} embedding files")
 
 
+def validate_model_config(report: ValidationReport):
+    if config.VISUAL_MODEL_PROVIDER in {"jina_clip", "jina"}:
+        if config.VISUAL_MODEL_NAME != "jinaai/jina-clip-v2":
+            report.warn(
+                "VISUAL_MODEL_PROVIDER=jina_clip is tuned for jinaai/jina-clip-v2; "
+                f"current model={config.VISUAL_MODEL_NAME}"
+            )
+        if not config.MODEL_TRUST_REMOTE_CODE:
+            report.error("jina-clip-v2 requires MODEL_TRUST_REMOTE_CODE=true")
+        if config.VISUAL_TRUNCATE_DIM != config.VECTOR_DIMENSION:
+            report.error(
+                f"VISUAL_TRUNCATE_DIM={config.VISUAL_TRUNCATE_DIM} must match "
+                f"VECTOR_DIMENSION={config.VECTOR_DIMENSION}"
+            )
+        for package in ("transformers", "einops", "timm", "PIL"):
+            if importlib.util.find_spec(package) is None:
+                report.warn(f"{package} is not installed; jina-clip-v2 cannot run in this environment")
+
+    if config.RERANK_MODEL_PROVIDER not in {"", "none", "disabled", "off"}:
+        if importlib.util.find_spec("sentence_transformers") is None:
+            report.warn("sentence-transformers is not installed; reranker will disable itself at runtime")
+
+    if config.OCR_ENGINE == "paddleocr" and importlib.util.find_spec("paddleocr") is None:
+        report.warn("paddleocr is not installed; OCR script will fall back to EasyOCR if available")
+
+    if config.ASR_MODEL and importlib.util.find_spec("whisper") is None:
+        report.warn("openai-whisper is not installed; ASR extraction cannot run in this environment")
+
+
 def validate_transcripts(report: ValidationReport):
     transcripts_dir = Path(config.TRANSCRIPTS_DIR)
     if not transcripts_dir.exists():
@@ -305,8 +335,12 @@ def main():
     report = ValidationReport()
     report.note(f"Configured visual model: {config.VISUAL_MODEL_PROVIDER}:{config.VISUAL_MODEL_NAME}")
     report.note(f"Configured vector dimension: {config.VECTOR_DIMENSION}")
+    report.note(f"Configured visual truncate dim: {config.VISUAL_TRUNCATE_DIM}")
+    report.note(f"Configured ASR model: {config.ASR_MODEL} language={config.ASR_LANGUAGE}")
+    report.note(f"Configured reranker: {config.RERANK_MODEL_PROVIDER}:{config.RERANK_MODEL_NAME}")
     report.note(f"Configured text index: {config.TRANSCRIPT_INDEX}")
 
+    validate_model_config(report)
     validate_videos_and_keyframes(report)
     validate_embeddings(report)
     validate_transcripts(report)
