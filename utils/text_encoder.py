@@ -86,6 +86,26 @@ class TextEncoder:
             trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
         ).to(self.device)
 
+    def _feature_tensor(self, outputs):
+        if isinstance(outputs, torch.Tensor):
+            return outputs
+
+        for attr_name in ("text_embeds", "image_embeds", "pooler_output"):
+            value = getattr(outputs, attr_name, None)
+            if value is not None:
+                return value
+
+        last_hidden = getattr(outputs, "last_hidden_state", None)
+        if last_hidden is not None:
+            return last_hidden[:, 0]
+
+        if isinstance(outputs, (tuple, list)):
+            for value in outputs:
+                if isinstance(value, torch.Tensor) and value.ndim >= 2:
+                    return value
+
+        raise TypeError(f"Cannot extract feature tensor from output type {type(outputs)!r}")
+
     def _load_jina_clip(self):
         try:
             from transformers import AutoModel
@@ -155,24 +175,28 @@ class TextEncoder:
             return F.normalize(text_features, p=2, dim=-1).numpy().astype(np.float32)
 
     def _encode_transformers(self, query: str):
+        text = query.lower() if self.provider == "siglip2" else query
+        processor_kwargs = {
+            "text": [text],
+            "padding": True,
+            "truncation": True,
+            "return_tensors": "pt",
+        }
+        if self.provider == "siglip2":
+            processor_kwargs["padding"] = "max_length"
+            processor_kwargs["max_length"] = 64
+
         inputs = self.processor(
-            text=[query],
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
+            **processor_kwargs,
         )
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
         with torch.no_grad():
             if hasattr(self.model, "get_text_features"):
-                text_features = self.model.get_text_features(**inputs)
+                text_features = self._feature_tensor(self.model.get_text_features(**inputs))
             else:
                 outputs = self.model(**inputs)
-                text_features = getattr(outputs, "text_embeds", None)
-                if text_features is None:
-                    text_features = getattr(outputs, "pooler_output", None)
-                if text_features is None:
-                    text_features = outputs.last_hidden_state[:, 0]
+                text_features = self._feature_tensor(outputs)
 
             if self.device == "cuda":
                 text_features = text_features.cpu()

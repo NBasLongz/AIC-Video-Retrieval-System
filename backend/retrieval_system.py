@@ -18,6 +18,7 @@ from utils.fusion import legacy_intersection, rrf_fusion
 from utils.query_processing import build_query_plan
 from utils.reranker import OptionalReranker
 from utils.text_encoder import TextEncoder
+from utils.translator import QueryTranslator
 from utils.video_metadata import load_video_metadata
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class VideoRetrievalSystem:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.encoder = TextEncoder(device=self.device)
         self.reranker = OptionalReranker()
+        self.translator = QueryTranslator()
 
     def _collection_vector_dim(self, vector_field: str) -> int | None:
         try:
@@ -341,25 +343,38 @@ class VideoRetrievalSystem:
         ocr = query_data.get("ocr") or ""
         caption = query_data.get("caption") or ""
         translated = query_data.get("translated") or query_data.get("query_en")
+        if not translated and description and config.ENABLE_QUERY_TRANSLATION:
+            translated = self.translator.translate_vi_to_en(description)
 
         primary_query = description or transcript or ocr or caption
         query_plan = build_query_plan(primary_query, translated_query=translated)
+        visual_query = translated or description
 
         result_sets: dict[str, list[dict[str, Any]]] = {}
 
         if description:
             visual_hits: list[dict[str, Any]] = []
-            for variant in query_plan.variants or (description,):
-                visual_hits.extend(self.clip_search(variant, max_results=config.VISUAL_MAX_RESULTS))
+            if visual_query:
+                visual_hits.extend(self.clip_search(visual_query, max_results=config.VISUAL_MAX_RESULTS))
             result_sets["visual"] = visual_hits
 
-        text_query = transcript or description or ocr or caption
-        if text_query:
-            all_text_hits = self._text_search(
-                text_query,
-                doc_types=None,
-                max_results=config.TEXT_MAX_RESULTS,
-            )
+        text_queries = []
+        for value in (ocr, transcript, caption, description, translated):
+            value = (value or "").strip()
+            if value and value.lower() not in {item.lower() for item in text_queries}:
+                text_queries.append(value)
+
+        if text_queries:
+            all_text_hits = []
+            per_query_limit = max(50, config.TEXT_MAX_RESULTS // max(1, len(text_queries)))
+            for text_query in text_queries:
+                all_text_hits.extend(
+                    self._text_search(
+                        text_query,
+                        doc_types=None,
+                        max_results=per_query_limit,
+                    )
+                )
             transcript_hits = [item for item in all_text_hits if item.get("doc_type") == "transcript"]
             ocr_hits = [item for item in all_text_hits if item.get("doc_type") == "ocr"]
             caption_hits = [item for item in all_text_hits if item.get("doc_type") == "caption"]
@@ -370,7 +385,7 @@ class VideoRetrievalSystem:
             ]
 
             if transcript_hits or transcript:
-                result_sets["transcript"] = transcript_hits or self.transcript_search(text_query)
+                result_sets["transcript"] = transcript_hits
             if ocr_hits or ocr or description:
                 result_sets["ocr"] = ocr_hits
             if caption_hits or caption or description:
@@ -396,6 +411,10 @@ class VideoRetrievalSystem:
         for item in fused:
             self._with_video_metadata(item)
             item.setdefault("query_language", query_plan.language_hint)
+            item.setdefault("query_original", primary_query)
+            item.setdefault("query_visual", visual_query)
+            if translated:
+                item.setdefault("query_translated", translated)
 
         rerank_top_k = query_data.get("rerank_top_k", config.RERANK_TOP_K)
         try:
@@ -404,7 +423,7 @@ class VideoRetrievalSystem:
             rerank_top_k = config.RERANK_TOP_K
 
         fused = self.reranker.rerank(
-            query_plan.normalized,
+            visual_query or query_plan.normalized,
             fused,
             top_k=rerank_top_k,
         )

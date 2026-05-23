@@ -11,7 +11,16 @@ import unicodedata
 from dataclasses import dataclass
 
 
-_VIETNAMESE_MARKS = set("ăâđêôơưĂÂĐÊÔƠƯ")
+_VIETNAMESE_MARKS = set(
+    "ăâđêôơư"
+    "ĂÂĐÊÔƠƯ"
+    "áàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệ"
+    "íìỉĩịóòỏõọốồổỗộớờởỡợ"
+    "úùủũụứừửữựýỳỷỹỵ"
+    "ÁÀẢÃẠẮẰẲẴẶẤẦẨẪẬÉÈẺẼẸẾỀỂỄỆ"
+    "ÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢ"
+    "ÚÙỦŨỤỨỪỬỮỰÝỲỶỸỴ"
+)
 
 
 @dataclass(frozen=True)
@@ -61,4 +70,3 @@ def build_query_plan(query: str, translated_query: str | None = None) -> QueryPl
         language_hint=detect_language_hint(normalized),
         variants=tuple(variants),
     )
-

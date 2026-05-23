@@ -146,6 +146,26 @@ class ImageEncoder:
         )
         self._move_model_to_device()
 
+    def _feature_tensor(self, outputs) -> torch.Tensor:
+        if isinstance(outputs, torch.Tensor):
+            return outputs
+
+        for attr_name in ("image_embeds", "text_embeds", "pooler_output"):
+            value = getattr(outputs, attr_name, None)
+            if value is not None:
+                return value
+
+        last_hidden = getattr(outputs, "last_hidden_state", None)
+        if last_hidden is not None:
+            return last_hidden[:, 0]
+
+        if isinstance(outputs, (tuple, list)):
+            for value in outputs:
+                if isinstance(value, torch.Tensor) and value.ndim >= 2:
+                    return value
+
+        raise TypeError(f"Cannot extract feature tensor from output type {type(outputs)!r}")
+
     def _load_jina_clip_model(self):
         try:
             from transformers import AutoModel
@@ -194,14 +214,10 @@ class ImageEncoder:
                 inputs = self.processor(images=[image], return_tensors="pt")
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
                 if hasattr(self.model, "get_image_features"):
-                    image_features = self.model.get_image_features(**inputs)
+                    image_features = self._feature_tensor(self.model.get_image_features(**inputs))
                 else:
                     outputs = self.model(**inputs)
-                    image_features = getattr(outputs, "image_embeds", None)
-                    if image_features is None:
-                        image_features = getattr(outputs, "pooler_output", None)
-                    if image_features is None:
-                        image_features = outputs.last_hidden_state[:, 0]
+                    image_features = self._feature_tensor(outputs)
             
             image_features = self._to_numpy(image_features)
             image_features = torch.from_numpy(image_features)
@@ -256,14 +272,10 @@ class ImageEncoder:
             inputs = self.processor(images=images, return_tensors="pt")
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
             if hasattr(self.model, "get_image_features"):
-                image_features = self.model.get_image_features(**inputs)
+                image_features = self._feature_tensor(self.model.get_image_features(**inputs))
             else:
                 outputs = self.model(**inputs)
-                image_features = getattr(outputs, "image_embeds", None)
-                if image_features is None:
-                    image_features = getattr(outputs, "pooler_output", None)
-                if image_features is None:
-                    image_features = outputs.last_hidden_state[:, 0]
+                image_features = self._feature_tensor(outputs)
         
         image_features = self._to_numpy(image_features)
         image_features = torch.from_numpy(image_features)

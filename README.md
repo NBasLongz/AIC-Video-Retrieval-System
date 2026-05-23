@@ -78,7 +78,7 @@ flowchart LR
 
 Điểm đã nâng cấp và cần tiếp tục benchmark:
 
-- Visual model mặc định đã chuyển sang `jinaai/jina-clip-v2` 1024d để ưu tiên truy vấn Việt-Anh và text-image retrieval.
+- Visual model mặc định đã chuyển sang `google/siglip2-so400m-patch16-naflex` 1152d; query tiếng Việt được dịch sang tiếng Anh trước khi dense visual search.
 - OCR/transcript/caption đã có nhánh search riêng, cần benchmark trọng số theo từng bộ video.
 - Fusion đã có RRF/hybrid, nhưng nên đo `nDCG@10`, `MRR@10`, `Recall@50` và latency theo từng tầng.
 - Reranker mặc định dùng `BAAI/bge-reranker-v2-m3` qua `sentence-transformers`, frontend có toggle `Rerank Top-K`.
@@ -167,14 +167,27 @@ data/embeddings/L01_V001/keyframe_1.pt
 Model mặc định cho profile thi đấu là:
 
 ```text
-VISUAL_MODEL_PROVIDER=jina_clip
-VISUAL_MODEL=jinaai/jina-clip-v2
-VECTOR_DIMENSION=1024
-VISUAL_TRUNCATE_DIM=1024
+VISUAL_MODEL_PROVIDER=siglip2
+VISUAL_MODEL=google/siglip2-so400m-patch16-naflex
+VECTOR_DIMENSION=1152
+VISUAL_TRUNCATE_DIM=1152
 MODEL_TRUST_REMOTE_CODE=true
+ENABLE_QUERY_TRANSLATION=true
+QUERY_TRANSLATION_MODEL=facebook/nllb-200-distilled-600M
 ```
 
-Lưu ý rất quan trọng: đổi từ OpenCLIP 512d sang Jina CLIP v2 1024d thì phải **recompute embeddings** và **recreate Milvus collection**. Hệ thống có guard dimension; nếu collection cũ là 512d mà config là 1024d, ingest/search sẽ báo lỗi thay vì search sai âm thầm.
+Luồng query lúc chạy:
+
+```text
+Query tiếng Việt trên UI
+-> backend detect tiếng Việt
+-> NLLB dịch VI -> EN
+-> SigLIP2 visual search bằng câu tiếng Anh
+-> Elasticsearch vẫn search OCR/transcript bằng cả câu gốc và câu dịch
+-> RRF fusion + BGE rerank
+```
+
+Lưu ý rất quan trọng: đổi từ OpenCLIP 512d hoặc Jina 1024d sang SigLIP2 1152d thì phải **recompute embeddings** và **recreate Milvus collection**. Hệ thống có guard dimension; nếu collection cũ khác 1152d, ingest/search sẽ báo lỗi thay vì search sai âm thầm.
 
 ### 4. Extract transcript bằng ASR
 

@@ -199,6 +199,21 @@ def validate_embeddings(report: ValidationReport):
 
 
 def validate_model_config(report: ValidationReport):
+    if config.VISUAL_MODEL_PROVIDER == "siglip2":
+        if "siglip2" not in config.VISUAL_MODEL_NAME.lower():
+            report.warn(
+                "VISUAL_MODEL_PROVIDER=siglip2 is tuned for Google SigLIP2 checkpoints; "
+                f"current model={config.VISUAL_MODEL_NAME}"
+            )
+        if "naflex" in config.VISUAL_MODEL_NAME.lower() and config.VISUAL_TRUNCATE_DIM != config.VECTOR_DIMENSION:
+            report.error(
+                f"VISUAL_TRUNCATE_DIM={config.VISUAL_TRUNCATE_DIM} must match "
+                f"VECTOR_DIMENSION={config.VECTOR_DIMENSION}"
+            )
+        for package in ("transformers", "timm", "PIL"):
+            if importlib.util.find_spec(package) is None:
+                report.warn(f"{package} is not installed; SigLIP2 cannot run in this environment")
+
     if config.VISUAL_MODEL_PROVIDER in {"jina_clip", "jina"}:
         if config.VISUAL_MODEL_NAME != "jinaai/jina-clip-v2":
             report.warn(
@@ -219,6 +234,11 @@ def validate_model_config(report: ValidationReport):
     if config.RERANK_MODEL_PROVIDER not in {"", "none", "disabled", "off"}:
         if importlib.util.find_spec("sentence_transformers") is None:
             report.warn("sentence-transformers is not installed; reranker will disable itself at runtime")
+
+    if config.ENABLE_QUERY_TRANSLATION:
+        for package in ("transformers", "sentencepiece"):
+            if importlib.util.find_spec(package) is None:
+                report.warn(f"{package} is not installed; query translation cannot run in this environment")
 
     if config.OCR_ENGINE == "paddleocr" and importlib.util.find_spec("paddleocr") is None:
         report.warn("paddleocr is not installed; OCR script will fall back to EasyOCR if available")
@@ -337,6 +357,11 @@ def main():
     report.note(f"Configured vector dimension: {config.VECTOR_DIMENSION}")
     report.note(f"Configured visual truncate dim: {config.VISUAL_TRUNCATE_DIM}")
     report.note(f"Configured ASR model: {config.ASR_MODEL} language={config.ASR_LANGUAGE}")
+    report.note(
+        "Configured translator: "
+        f"{config.QUERY_TRANSLATION_PROVIDER}:{config.QUERY_TRANSLATION_MODEL} "
+        f"{config.QUERY_TRANSLATION_SRC_LANG}->{config.QUERY_TRANSLATION_TGT_LANG}"
+    )
     report.note(f"Configured reranker: {config.RERANK_MODEL_PROVIDER}:{config.RERANK_MODEL_NAME}")
     report.note(f"Configured text index: {config.TRANSCRIPT_INDEX}")
 

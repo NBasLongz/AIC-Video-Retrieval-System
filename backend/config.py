@@ -47,8 +47,8 @@ MILVUS_HOST = _env("MILVUS_HOST", "localhost")
 MILVUS_PORT = _env("MILVUS_PORT", "19530")
 KEYFRAME_COLLECTION_NAME = _env("KEYFRAME_COLLECTION_NAME", "video_keyframes")
 
-# Keep this in sync with the active visual model. jina-clip-v2 full vectors are 1024d.
-VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 1024)
+# Keep this in sync with the active visual model. SigLIP2 SO400M projection is 1152d.
+VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 1152)
 
 # Compatibility aliases / service URLs (used by scripts expecting these names)
 ELASTICSEARCH_URL = _env("ELASTICSEARCH_URL", "http://localhost:9200")
@@ -70,10 +70,10 @@ CLIP_FEATURES_DIR = _env("EMBEDDINGS_DIR", str(DATA_DIR / "embeddings"))
 EMBEDDINGS_DIR = CLIP_FEATURES_DIR
 
 # --- Model registry ---
-# Competition default: jina-clip-v2 gives a strong multilingual text-image space.
+# Competition default: Vietnamese UI query -> English visual query with SigLIP2 NaFlex.
 # If you switch models, recompute embeddings and recreate the Milvus collection.
-VISUAL_MODEL_PROVIDER = _env("VISUAL_MODEL_PROVIDER", "jina_clip").lower()
-VISUAL_MODEL_NAME = _env("VISUAL_MODEL", _env("CLIP_MODEL_NAME", "jinaai/jina-clip-v2"))
+VISUAL_MODEL_PROVIDER = _env("VISUAL_MODEL_PROVIDER", "siglip2").lower()
+VISUAL_MODEL_NAME = _env("VISUAL_MODEL", _env("CLIP_MODEL_NAME", "google/siglip2-so400m-patch16-naflex"))
 VISUAL_MODEL_PRETRAINED = _env("VISUAL_MODEL_PRETRAINED", _env("CLIP_PRETRAINED", ""))
 MODEL_TRUST_REMOTE_CODE = _env_bool("MODEL_TRUST_REMOTE_CODE", True)
 VISUAL_TRUNCATE_DIM = _env_int("VISUAL_TRUNCATE_DIM", VECTOR_DIMENSION)
@@ -101,7 +101,12 @@ WEIGHT_VISUAL = _env_float("WEIGHT_VISUAL", 1.0)
 WEIGHT_TRANSCRIPT = _env_float("WEIGHT_TRANSCRIPT", 1.0)
 WEIGHT_OCR = _env_float("WEIGHT_OCR", 1.0)
 WEIGHT_CAPTION = _env_float("WEIGHT_CAPTION", 0.8)
-ENABLE_QUERY_TRANSLATION = _env_bool("ENABLE_QUERY_TRANSLATION", False)
+ENABLE_QUERY_TRANSLATION = _env_bool("ENABLE_QUERY_TRANSLATION", True)
+QUERY_TRANSLATION_PROVIDER = _env("QUERY_TRANSLATION_PROVIDER", "nllb").lower()
+QUERY_TRANSLATION_MODEL = _env("QUERY_TRANSLATION_MODEL", "facebook/nllb-200-distilled-600M")
+QUERY_TRANSLATION_SRC_LANG = _env("QUERY_TRANSLATION_SRC_LANG", "vie_Latn")
+QUERY_TRANSLATION_TGT_LANG = _env("QUERY_TRANSLATION_TGT_LANG", "eng_Latn")
+QUERY_TRANSLATION_MAX_LENGTH = _env_int("QUERY_TRANSLATION_MAX_LENGTH", 128)
 
 OBJECT_LABELS = [
     "Tortoise",
