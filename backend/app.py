@@ -95,6 +95,8 @@ def health_api():
             "port": config.MILVUS_PORT,
             "collection": config.KEYFRAME_COLLECTION_NAME,
             "vector_dimension": config.VECTOR_DIMENSION,
+            "text_collection": config.TEXT_COLLECTION_NAME,
+            "text_vector_dimension": config.TEXT_VECTOR_DIMENSION,
         },
         "elasticsearch": {
             "url": config.ELASTICSEARCH_URL,
@@ -104,6 +106,9 @@ def health_api():
             "visual_provider": config.VISUAL_MODEL_PROVIDER,
             "visual_model": config.VISUAL_MODEL_NAME,
             "visual_truncate_dim": config.VISUAL_TRUNCATE_DIM,
+            "dense_text_enabled": config.ENABLE_DENSE_TEXT_RETRIEVAL,
+            "text_provider": config.TEXT_MODEL_PROVIDER,
+            "text_model": config.TEXT_MODEL_NAME,
             "query_translation_enabled": config.ENABLE_QUERY_TRANSLATION,
             "query_translation_provider": config.QUERY_TRANSLATION_PROVIDER,
             "query_translation_model": config.QUERY_TRANSLATION_MODEL,

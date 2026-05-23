@@ -26,7 +26,8 @@ function mapBackendResult(item: BackendSearchResult, index: number, ocrHints: st
   const visual = clampScore(item.visual_score ?? item.clip_score ?? sourceScores.clip_score ?? sourceScores.visual_score);
   const ocr = clampScore(item.ocr_score ?? sourceScores.ocr_score);
   const transcript = clampScore(item.transcript_score ?? sourceScores.transcript_score);
-  const fusion = clampScore(item.fusion_score ?? Math.max(visual, ocr, transcript));
+  const textDense = clampScore(item.text_dense_score ?? sourceScores.text_dense_score);
+  const fusion = clampScore(item.fusion_score ?? Math.max(visual, ocr, transcript, textDense));
   const rerank = item.rerank_score === undefined ? undefined : clampScore(item.rerank_score);
   const score = rerank ?? fusion ?? visual;
 
@@ -58,6 +59,7 @@ function mapBackendResult(item: BackendSearchResult, index: number, ocrHints: st
       visual,
       ocr,
       transcript,
+      textDense,
       fusion,
       rerank,
     },
@@ -66,4 +68,3 @@ function mapBackendResult(item: BackendSearchResult, index: number, ocrHints: st
     raw: item,
   };
 }
-

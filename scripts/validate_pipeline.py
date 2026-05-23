@@ -260,6 +260,17 @@ def validate_model_config(report: ValidationReport):
         if importlib.util.find_spec("sentence_transformers") is None:
             report.warn("sentence-transformers is not installed; reranker will disable itself at runtime")
 
+    if config.ENABLE_DENSE_TEXT_RETRIEVAL:
+        if config.TEXT_MODEL_PROVIDER in {"", "none", "off", "disabled"}:
+            report.error("ENABLE_DENSE_TEXT_RETRIEVAL=true but TEXT_MODEL_PROVIDER is disabled")
+        if config.TEXT_VECTOR_DIMENSION != 1024 and "bge-m3" in config.TEXT_MODEL_NAME.lower():
+            report.error(
+                f"TEXT_MODEL={config.TEXT_MODEL_NAME} outputs 1024d dense vectors, "
+                f"but TEXT_VECTOR_DIMENSION={config.TEXT_VECTOR_DIMENSION}"
+            )
+        if importlib.util.find_spec("sentence_transformers") is None:
+            report.warn("sentence-transformers is not installed; dense text retrieval cannot run")
+
     if config.ENABLE_QUERY_TRANSLATION:
         for package in ("transformers", "sentencepiece"):
             if importlib.util.find_spec(package) is None:
@@ -355,6 +366,22 @@ def validate_services(report: ValidationReport):
                 report.note(f"Milvus collection dim OK: {dim}")
         else:
             report.warn(f"Milvus collection does not exist: {config.KEYFRAME_COLLECTION_NAME}")
+
+        if config.ENABLE_DENSE_TEXT_RETRIEVAL:
+            if utility.has_collection(config.TEXT_COLLECTION_NAME):
+                collection = Collection(config.TEXT_COLLECTION_NAME)
+                dim = None
+                for field in collection.schema.fields:
+                    if field.name == "text_vector":
+                        dim = int(field.params.get("dim"))
+                if dim != config.TEXT_VECTOR_DIMENSION:
+                    report.error(
+                        f"Milvus text dim={dim} != TEXT_VECTOR_DIMENSION={config.TEXT_VECTOR_DIMENSION}"
+                    )
+                else:
+                    report.note(f"Milvus text collection dim OK: {dim}")
+            else:
+                report.warn(f"Milvus text collection does not exist: {config.TEXT_COLLECTION_NAME}")
     except Exception as exc:
         report.warn(f"Could not validate Milvus: {exc}")
 
@@ -381,6 +408,10 @@ def main():
     report.note(f"Configured visual model: {config.VISUAL_MODEL_PROVIDER}:{config.VISUAL_MODEL_NAME}")
     report.note(f"Configured vector dimension: {config.VECTOR_DIMENSION}")
     report.note(f"Configured visual truncate dim: {config.VISUAL_TRUNCATE_DIM}")
+    report.note(
+        f"Configured dense text model: {config.TEXT_MODEL_PROVIDER}:{config.TEXT_MODEL_NAME} "
+        f"dim={config.TEXT_VECTOR_DIMENSION} enabled={config.ENABLE_DENSE_TEXT_RETRIEVAL}"
+    )
     report.note(f"Configured ASR model: {config.ASR_MODEL} language={config.ASR_LANGUAGE}")
     report.note(
         "Configured translator: "

@@ -99,6 +99,7 @@ def rrf_fusion(
                 "ocr_score",
                 "caption_score",
                 "text_score",
+                "text_dense_score",
                 "rerank_score",
             ):
                 if score_field in item and item[score_field] is not None:
@@ -139,4 +140,3 @@ def legacy_intersection(result_sets: list[list[Result]]) -> list[Result]:
             break
 
     return [lookup_map[key] for key in intersecting_ids]
-

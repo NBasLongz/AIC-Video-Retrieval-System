@@ -84,6 +84,11 @@ services:
       VECTOR_DIMENSION: 1152
       VISUAL_TRUNCATE_DIM: 1152
       MODEL_TRUST_REMOTE_CODE: "true"
+      TEXT_COLLECTION_NAME: video_text_embeddings
+      ENABLE_DENSE_TEXT_RETRIEVAL: "true"
+      TEXT_MODEL_PROVIDER: sentence_transformers
+      TEXT_MODEL: BAAI/bge-m3
+      TEXT_VECTOR_DIMENSION: 1024
       ENABLE_QUERY_TRANSLATION: "true"
       QUERY_TRANSLATION_PROVIDER: nllb
       QUERY_TRANSLATION_MODEL: facebook/nllb-200-distilled-600M

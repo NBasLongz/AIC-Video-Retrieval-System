@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 from elasticsearch import Elasticsearch
-from elasticsearch.helpers import bulk
+from elasticsearch.helpers import bulk, scan
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
 from backend import config
@@ -20,6 +20,7 @@ from utils.elasticsearch_client import (
     get_elasticsearch_client,
     recreate_transcript_index,
 )
+from utils.dense_text_encoder import DenseTextEncoder
 
 BULK_CHUNK_SIZE = 2000
 logger = logging.getLogger(__name__)
@@ -85,16 +86,24 @@ def _resolve_frames_from_map(mapping, target_seconds: np.ndarray):
 
 # --- Ingestion Functions ---
 
-def setup_milvus_collection(collection_name, schema, index_field, index_params, skip_if_exists=True):
+def setup_milvus_collection(
+    collection_name,
+    schema,
+    index_field,
+    index_params,
+    skip_if_exists=True,
+    expected_dim=None,
+):
+    expected_dim = expected_dim or config.VECTOR_DIMENSION
     if utility.has_collection(collection_name):
         collection = Collection(collection_name)
         collection.load()
         count = collection.num_entities
         existing_dim = _collection_vector_dim(collection, index_field)
-        if existing_dim is not None and existing_dim != config.VECTOR_DIMENSION:
+        if existing_dim is not None and existing_dim != expected_dim:
             logger.warning(
                 f"Milvus collection '{collection_name}' vector dim is {existing_dim}, "
-                f"but config.VECTOR_DIMENSION is {config.VECTOR_DIMENSION}. "
+                f"but expected dim is {expected_dim}. "
                 "Recreating collection to match the active embedding model."
             )
             utility.drop_collection(collection_name)
@@ -178,6 +187,96 @@ def ingest_keyframe_data(collection: Collection, skip_if_has_data=True):
             
     collection.flush()
     logger.info("Keyframe data ingestion complete.")
+
+
+def _text_from_source(source: dict) -> str:
+    return str(source.get("text") or source.get("ocr_text") or source.get("caption") or "").strip()
+
+
+def ingest_dense_text_data(
+    collection: Collection,
+    es_client: Elasticsearch,
+    skip_if_has_data=True,
+):
+    """Mirror Elasticsearch transcript/OCR/caption docs into a dense Milvus text index."""
+
+    if not config.ENABLE_DENSE_TEXT_RETRIEVAL:
+        logger.info("Dense text retrieval is disabled. Skipping text vector ingestion.")
+        return
+
+    if skip_if_has_data:
+        count = collection.num_entities
+        if count > 0:
+            logger.info("Dense text collection already has %s rows. Skipping ingestion.", count)
+            return
+
+    if not es_client.indices.exists(index=config.TRANSCRIPT_INDEX):
+        logger.warning("Text index '%s' does not exist. Skipping dense text ingestion.", config.TRANSCRIPT_INDEX)
+        return
+
+    encoder = DenseTextEncoder(device="cuda" if torch.cuda.is_available() else "cpu")
+    source_fields = [
+        "video_id",
+        "keyframe_index",
+        "start",
+        "end",
+        "text",
+        "ocr_text",
+        "caption",
+        "doc_type",
+        "source_type",
+    ]
+    total = 0
+    batch_sources: list[dict] = []
+    batch_texts: list[str] = []
+
+    def flush_batch():
+        nonlocal total, batch_sources, batch_texts
+        if not batch_texts:
+            return
+
+        vectors = encoder.encode(batch_texts)
+        if vectors.shape[-1] != config.TEXT_VECTOR_DIMENSION:
+            raise ValueError(
+                f"Dense text batch dim={vectors.shape[-1]} != "
+                f"TEXT_VECTOR_DIMENSION={config.TEXT_VECTOR_DIMENSION}"
+            )
+
+        entities = [
+            [str(item.get("video_id") or "") for item in batch_sources],
+            [int(item.get("keyframe_index") or 0) for item in batch_sources],
+            [float(item.get("start") or 0.0) for item in batch_sources],
+            [float(item.get("end") or item.get("start") or 0.0) for item in batch_sources],
+            [str(item.get("doc_type") or item.get("source_type") or "text")[:32] for item in batch_sources],
+            [text[:4096] for text in batch_texts],
+            vectors,
+        ]
+        collection.insert(entities)
+        total += len(batch_texts)
+        batch_sources = []
+        batch_texts = []
+
+    for hit in scan(
+        es_client,
+        index=config.TRANSCRIPT_INDEX,
+        query={"query": {"match_all": {}}},
+        _source=source_fields,
+        size=1000,
+        preserve_order=False,
+    ):
+        source = hit.get("_source", {})
+        text = _text_from_source(source)
+        if not text or not source.get("video_id"):
+            continue
+        batch_sources.append(source)
+        batch_texts.append(text)
+        if len(batch_texts) >= 128:
+            flush_batch()
+
+    flush_batch()
+    collection.flush()
+    logger.info("Dense text ingestion complete. Total documents: %s", total)
+
 
 def ingest_transcript_data(es_client: Elasticsearch, folder_path: str) -> None:
     logger.info("Ingesting transcript data into Elasticsearch...")
@@ -579,6 +678,11 @@ def main():
         action="store_true",
         help="Bỏ qua ingest caption/VLM artifacts."
     )
+    parser.add_argument(
+        "--skip-text-dense",
+        action="store_true",
+        help="Skip dense text embeddings for transcript/OCR/caption.",
+    )
     args = parser.parse_args()
 
     if args.skip_transcripts and args.append_transcripts:
@@ -630,8 +734,35 @@ def main():
             "keyframe_vector",
             kf_index_params,
             skip_if_exists=args.append_milvus,
+            expected_dim=config.VECTOR_DIMENSION,
         )
         ingest_keyframe_data(kf_collection, skip_if_has_data=args.append_milvus)
+
+        if not args.skip_text_dense and config.ENABLE_DENSE_TEXT_RETRIEVAL:
+            text_fields = [
+                FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
+                FieldSchema(name="video_id", dtype=DataType.VARCHAR, max_length=64),
+                FieldSchema(name="keyframe_index", dtype=DataType.INT64),
+                FieldSchema(name="start", dtype=DataType.FLOAT),
+                FieldSchema(name="end", dtype=DataType.FLOAT),
+                FieldSchema(name="doc_type", dtype=DataType.VARCHAR, max_length=32),
+                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=4096),
+                FieldSchema(name="text_vector", dtype=DataType.FLOAT_VECTOR, dim=config.TEXT_VECTOR_DIMENSION),
+            ]
+            text_schema = CollectionSchema(text_fields, "Dense vectors for transcript/OCR/caption text")
+            text_index_params = {"metric_type": "COSINE", "index_type": "IVF_FLAT", "params": {"nlist": 128}}
+            text_collection = setup_milvus_collection(
+                config.TEXT_COLLECTION_NAME,
+                text_schema,
+                "text_vector",
+                text_index_params,
+                skip_if_exists=args.append_milvus,
+                expected_dim=config.TEXT_VECTOR_DIMENSION,
+            )
+            es_client = get_elasticsearch_client()
+            ingest_dense_text_data(text_collection, es_client, skip_if_has_data=args.append_milvus)
+        elif args.skip_text_dense:
+            logger.info("Skipping dense text Milvus ingestion by request.")
     else:
         logger.info("Bỏ qua ingest Milvus theo yêu cầu.")
 

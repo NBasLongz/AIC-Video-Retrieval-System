@@ -6,6 +6,7 @@ export type RetrievalScores = {
   visual: number;
   ocr: number;
   transcript: number;
+  textDense: number;
   fusion: number;
   rerank?: number;
 };
@@ -56,6 +57,7 @@ export type BackendSearchResult = {
   transcript_score?: number;
   caption_score?: number;
   text_score?: number;
+  text_dense_score?: number;
   fusion_score?: number;
   rerank_score?: number;
   source_type?: string;
@@ -93,4 +95,3 @@ export type SubmitHistoryItem = {
   createdAt: string;
   message?: string;
 };
-

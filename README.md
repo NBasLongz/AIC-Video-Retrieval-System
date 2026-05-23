@@ -1124,3 +1124,35 @@ Nếu kết quả không tốt, kiểm tra theo thứ tự:
 - Docker GPU support: https://docs.docker.com/compose/how-tos/gpu-support/
 - Triton dynamic batching: https://docs.nvidia.com/deeplearning/triton-inference-server/
 - BGE reranker v2: https://bge-model.com/bge/bge_reranker_v2.html
+
+## Current Fast Accuracy Profile
+
+Hệ thống hiện dùng profile ưu tiên chất lượng nhưng vẫn giữ query nhanh trên GPU:
+
+```text
+Visual dense retrieval:
+  collection: video_keyframes
+  model: google/siglip2-so400m-patch16-naflex
+  vector field: keyframe_vector
+  dimension: 1152
+
+Dense text retrieval:
+  collection: video_text_embeddings
+  model: BAAI/bge-m3
+  vector field: text_vector
+  dimension: 1024
+
+Sparse text retrieval:
+  engine: Elasticsearch
+  fields: text, ocr_text, caption
+
+Fusion:
+  method: weighted RRF
+  sources: visual, transcript, ocr, caption, text_dense
+
+Rerank:
+  model: BAAI/bge-reranker-v2-m3
+  scope: top K only
+```
+
+Không trộn vector ảnh và vector text vào cùng collection. SigLIP2 là `1152d`, còn BGE-M3 dense text là `1024d`; `backend.ingest_data` và `scripts.validate_pipeline --check-services` đều kiểm tra schema để tránh search sai do lệch dimension.

@@ -8,13 +8,14 @@ from typing import Any
 
 import torch
 from elasticsearch import Elasticsearch
-from pymilvus import Collection, connections
+from pymilvus import Collection, connections, utility
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend import config
 from utils.elasticsearch_client import get_elasticsearch_client
 from utils.fusion import legacy_intersection, rrf_fusion
+from utils.dense_text_encoder import DenseTextEncoder
 from utils.query_processing import build_query_plan
 from utils.reranker import OptionalReranker
 from utils.text_encoder import TextEncoder
@@ -78,7 +79,7 @@ class VideoRetrievalSystem:
         connections.connect("default", host=config.MILVUS_HOST, port=config.MILVUS_PORT)
         logger.info("Successfully connected to Milvus.")
         self.keyframes_collection = Collection(config.KEYFRAME_COLLECTION_NAME)
-        self.collection_vector_dim = self._collection_vector_dim("keyframe_vector")
+        self.collection_vector_dim = self._collection_vector_dim(self.keyframes_collection, "keyframe_vector")
         if self.collection_vector_dim and self.collection_vector_dim != config.VECTOR_DIMENSION:
             raise ValueError(
                 f"Milvus collection vector dim={self.collection_vector_dim} but "
@@ -87,17 +88,37 @@ class VideoRetrievalSystem:
             )
         logger.info("Milvus collection ready.")
 
+        self.text_collection = None
+        self.text_collection_vector_dim = None
+        if config.ENABLE_DENSE_TEXT_RETRIEVAL and utility.has_collection(config.TEXT_COLLECTION_NAME):
+            self.text_collection = Collection(config.TEXT_COLLECTION_NAME)
+            self.text_collection_vector_dim = self._collection_vector_dim(self.text_collection, "text_vector")
+            if self.text_collection_vector_dim and self.text_collection_vector_dim != config.TEXT_VECTOR_DIMENSION:
+                raise ValueError(
+                    f"Text Milvus collection vector dim={self.text_collection_vector_dim} but "
+                    f"TEXT_VECTOR_DIMENSION={config.TEXT_VECTOR_DIMENSION}. Recreate "
+                    "the dense text collection with backend.ingest_data."
+                )
+            logger.info("Dense text Milvus collection ready.")
+        elif config.ENABLE_DENSE_TEXT_RETRIEVAL:
+            logger.warning(
+                "Dense text retrieval enabled but collection '%s' does not exist yet. "
+                "Run backend.ingest_data to build it.",
+                config.TEXT_COLLECTION_NAME,
+            )
+
         self.es_client: Elasticsearch = get_elasticsearch_client()
         logger.info("Successfully connected to Elasticsearch.")
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.encoder = TextEncoder(device=self.device)
+        self.text_encoder = DenseTextEncoder(device=self.device)
         self.reranker = OptionalReranker()
         self.translator = QueryTranslator()
 
-    def _collection_vector_dim(self, vector_field: str) -> int | None:
+    def _collection_vector_dim(self, collection: Collection, vector_field: str) -> int | None:
         try:
-            for field in self.keyframes_collection.schema.fields:
+            for field in collection.schema.fields:
                 if field.name == vector_field:
                     dim = field.params.get("dim") if hasattr(field, "params") else None
                     return int(dim) if dim is not None else None
@@ -326,6 +347,77 @@ class VideoRetrievalSystem:
         )
         return hits
 
+    def dense_text_search(self, query: str, max_results: int | None = None) -> list[dict[str, Any]]:
+        """Dense retrieval over transcript/OCR/caption embeddings in Milvus."""
+
+        if not query or not config.ENABLE_DENSE_TEXT_RETRIEVAL or self.text_collection is None:
+            return []
+
+        max_results = max_results or config.TEXT_DENSE_MAX_RESULTS
+        try:
+            query_vector = self.text_encoder.encode(query)
+        except Exception as exc:
+            logger.error("Dense text query encoding failed: %s", exc, exc_info=True)
+            return []
+
+        query_dim = int(query_vector.reshape(1, -1).shape[-1])
+        expected_dim = self.text_collection_vector_dim or config.TEXT_VECTOR_DIMENSION
+        if query_dim != expected_dim:
+            logger.error(
+                "Dense text query dimension mismatch: got %s, expected %s. "
+                "Check TEXT_MODEL/TEXT_VECTOR_DIMENSION and Milvus text collection schema.",
+                query_dim,
+                expected_dim,
+            )
+            return []
+
+        try:
+            search_results = self.text_collection.search(
+                data=query_vector,
+                anns_field="text_vector",
+                param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+                limit=max_results,
+                output_fields=["video_id", "keyframe_index", "start", "end", "doc_type", "text"],
+            )
+        except Exception as exc:
+            logger.error("Milvus dense text search failed: %s", exc, exc_info=True)
+            return []
+
+        hits: list[dict[str, Any]] = []
+        if not search_results:
+            return hits
+
+        for hit in search_results[0]:
+            doc_type = hit.entity.get("doc_type") or "text"
+            text = hit.entity.get("text") or ""
+            score = float(hit.distance)
+            item = {
+                "video_id": hit.entity.get("video_id"),
+                "keyframe_index": hit.entity.get("keyframe_index"),
+                "start": hit.entity.get("start"),
+                "start_seconds": hit.entity.get("start"),
+                "end": hit.entity.get("end"),
+                "text": text,
+                "doc_type": doc_type,
+                "source_type": doc_type,
+                "text_dense_score": score,
+                "text_score": score,
+            }
+            if doc_type == "transcript":
+                item["transcript_text"] = text
+                item["transcript_score"] = score
+            elif doc_type == "ocr":
+                item["ocr_text"] = text
+                item["ocr_score"] = score
+            elif doc_type == "caption":
+                item["caption_text"] = text
+                item["caption_score"] = score
+
+            hits.append(self._with_video_metadata(item))
+
+        logger.info("Dense text search found %s hits.", len(hits))
+        return hits
+
     def transcript_search(self, query: str = "", max_results: int | None = None) -> list[dict[str, Any]]:
         return self._text_search(query, doc_types=["transcript"], max_results=max_results)
 
@@ -366,13 +458,21 @@ class VideoRetrievalSystem:
 
         if text_queries:
             all_text_hits = []
+            all_dense_text_hits = []
             per_query_limit = max(50, config.TEXT_MAX_RESULTS // max(1, len(text_queries)))
+            per_dense_query_limit = max(30, config.TEXT_DENSE_MAX_RESULTS // max(1, len(text_queries)))
             for text_query in text_queries:
                 all_text_hits.extend(
                     self._text_search(
                         text_query,
                         doc_types=None,
                         max_results=per_query_limit,
+                    )
+                )
+                all_dense_text_hits.extend(
+                    self.dense_text_search(
+                        text_query,
+                        max_results=per_dense_query_limit,
                     )
                 )
             transcript_hits = [item for item in all_text_hits if item.get("doc_type") == "transcript"]
@@ -392,6 +492,8 @@ class VideoRetrievalSystem:
                 result_sets["caption"] = caption_hits
             if generic_hits:
                 result_sets["text"] = generic_hits
+            if all_dense_text_hits:
+                result_sets["text_dense"] = all_dense_text_hits
 
         weights = {
             "visual": config.WEIGHT_VISUAL,
@@ -399,6 +501,7 @@ class VideoRetrievalSystem:
             "ocr": config.WEIGHT_OCR,
             "caption": config.WEIGHT_CAPTION,
             "text": 0.8,
+            "text_dense": config.WEIGHT_TEXT_DENSE,
         }
 
         fused = rrf_fusion(

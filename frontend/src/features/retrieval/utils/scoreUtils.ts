@@ -11,6 +11,7 @@ export function normalizeSource(source?: string): string {
   if (normalized === "ocr") return "OCR";
   if (normalized === "transcript" || normalized === "asr") return "Transcript";
   if (normalized === "caption") return "Caption";
+  if (normalized === "text_dense") return "Text";
   if (normalized === "text") return "Text";
   if (normalized === "hybrid") return "Hybrid";
   const original = source ?? "Hybrid";

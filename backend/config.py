@@ -46,6 +46,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 MILVUS_HOST = _env("MILVUS_HOST", "localhost")
 MILVUS_PORT = _env("MILVUS_PORT", "19530")
 KEYFRAME_COLLECTION_NAME = _env("KEYFRAME_COLLECTION_NAME", "video_keyframes")
+TEXT_COLLECTION_NAME = _env("TEXT_COLLECTION_NAME", "video_text_embeddings")
 
 # Keep this in sync with the active visual model. SigLIP2 SO400M projection is 1152d.
 VECTOR_DIMENSION = _env_int("VECTOR_DIMENSION", 1152)
@@ -82,8 +83,9 @@ VISUAL_TRUNCATE_DIM = _env_int("VISUAL_TRUNCATE_DIM", VECTOR_DIMENSION)
 CLIP_MODEL_NAME = VISUAL_MODEL_NAME
 CLIP_PRETRAINED = VISUAL_MODEL_PRETRAINED
 
-TEXT_MODEL_PROVIDER = _env("TEXT_MODEL_PROVIDER", "none").lower()
+TEXT_MODEL_PROVIDER = _env("TEXT_MODEL_PROVIDER", "sentence_transformers").lower()
 TEXT_MODEL_NAME = _env("TEXT_MODEL", "BAAI/bge-m3")
+TEXT_VECTOR_DIMENSION = _env_int("TEXT_VECTOR_DIMENSION", 1024)
 RERANK_MODEL_PROVIDER = _env("RERANK_MODEL_PROVIDER", "sentence_transformers").lower()
 RERANK_MODEL_NAME = _env("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 ASR_MODEL = _env("ASR_MODEL", _env("WHISPER_MODEL", "large-v3"))
@@ -94,6 +96,7 @@ OCR_LANGUAGES = [lang.strip() for lang in _env("OCR_LANGUAGES", "en,vi").split("
 # --- Retrieval defaults ---
 VISUAL_MAX_RESULTS = _env_int("VISUAL_MAX_RESULTS", 500)
 TEXT_MAX_RESULTS = _env_int("TEXT_MAX_RESULTS", 500)
+TEXT_DENSE_MAX_RESULTS = _env_int("TEXT_DENSE_MAX_RESULTS", 300)
 FINAL_MAX_RESULTS = _env_int("FINAL_MAX_RESULTS", 500)
 RERANK_TOP_K = _env_int("RERANK_TOP_K", 50)
 RRF_K = _env_int("RRF_K", 60)
@@ -101,6 +104,8 @@ WEIGHT_VISUAL = _env_float("WEIGHT_VISUAL", 1.0)
 WEIGHT_TRANSCRIPT = _env_float("WEIGHT_TRANSCRIPT", 1.0)
 WEIGHT_OCR = _env_float("WEIGHT_OCR", 1.0)
 WEIGHT_CAPTION = _env_float("WEIGHT_CAPTION", 0.8)
+WEIGHT_TEXT_DENSE = _env_float("WEIGHT_TEXT_DENSE", 0.9)
+ENABLE_DENSE_TEXT_RETRIEVAL = _env_bool("ENABLE_DENSE_TEXT_RETRIEVAL", True)
 ENABLE_QUERY_TRANSLATION = _env_bool("ENABLE_QUERY_TRANSLATION", True)
 QUERY_TRANSLATION_PROVIDER = _env("QUERY_TRANSLATION_PROVIDER", "nllb").lower()
 QUERY_TRANSLATION_MODEL = _env("QUERY_TRANSLATION_MODEL", "facebook/nllb-200-distilled-600M")

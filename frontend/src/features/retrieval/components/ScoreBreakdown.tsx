@@ -16,10 +16,11 @@ export function ScoreBreakdown({ scores }: { scores: RetrievalScores }) {
     ["V", scores.visual],
     ["O", scores.ocr],
     ["T", scores.transcript],
+    ["D", scores.textDense],
   ] as const;
 
   return (
-    <div className="grid grid-cols-3 gap-1">
+    <div className="grid grid-cols-4 gap-1">
       {rows.map(([label, value]) => (
         <div key={label} className="rounded-lg bg-slate-50 px-2 py-1">
           <div className="mb-1 flex items-center justify-between text-[10px] font-black text-slate-500">
@@ -34,4 +35,3 @@ export function ScoreBreakdown({ scores }: { scores: RetrievalScores }) {
     </div>
   );
 }
-
