@@ -4,6 +4,170 @@ Tài liệu này giải thích cách xây hệ thống truy xuất video đa ph�
 
 Repo hiện tại đã được nâng theo hướng thi đấu: Flask backend làm API, Milvus cho dense vector search, Elasticsearch cho OCR/transcript/caption search, hybrid fusion bằng RRF, rerank top candidates, validate số chiều embedding, Whisper ASR, keyframe extraction, OCR/caption ingest và frontend React/Vite riêng để xem, pin, so sánh lân cận và submit frame.
 
+## Cài Đặt Và Chạy Hệ Thống
+
+Phần này là checklist chạy từ máy mới clone repo đến lúc search được. Dữ liệu runtime nằm trong `data/` nhưng Git chỉ track cấu trúc thư mục, không track video, keyframe, embedding, transcript, OCR hay caption sinh ra khi chạy.
+
+### 1. Yêu cầu máy
+
+```text
+Python 3.10+
+Node.js 20+
+Docker Desktop / Docker Engine
+NVIDIA GPU + driver CUDA
+NVIDIA Container Toolkit nếu chạy backend bằng Docker GPU
+```
+
+### 2. Cài backend Python
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3. Cài frontend React
+
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+Khi build xong, Flask sẽ serve UI từ `frontend/dist/`. Nếu muốn dev frontend riêng:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+### 4. Tạo cấu hình môi trường
+
+```powershell
+copy .env.example .env
+```
+
+Profile mạnh hiện tại:
+
+```text
+VISUAL_MODEL_PROVIDER=siglip2
+VISUAL_MODEL=google/siglip2-so400m-patch16-naflex
+VECTOR_DIMENSION=1152
+ENABLE_QUERY_TRANSLATION=true
+QUERY_TRANSLATION_MODEL=facebook/nllb-200-distilled-600M
+
+ENABLE_DENSE_TEXT_RETRIEVAL=true
+TEXT_MODEL_PROVIDER=sentence_transformers
+TEXT_MODEL=BAAI/bge-m3
+TEXT_VECTOR_DIMENSION=1024
+
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+ASR_MODEL=large-v3
+OCR_ENGINE=paddleocr
+```
+
+### 5. Chạy database bằng Docker
+
+```powershell
+docker compose up -d etcd minio standalone elasticsearch redis
+```
+
+Kiểm tra services:
+
+```powershell
+docker compose ps
+python -m scripts.validate_pipeline --check-services
+```
+
+### 6. Đặt video vào repo
+
+Đặt video test hoặc video thi vào:
+
+```text
+data/videos/<video_id>.mp4
+```
+
+Ví dụ:
+
+```text
+data/videos/L01_V001.mp4
+```
+
+Tên file không có đuôi `.mp4` chính là `video_id`, dùng xuyên suốt cho keyframe, transcript, OCR, embedding và submit.
+
+### 7. Chạy pipeline trích xuất offline
+
+```powershell
+python -m scripts.extract_keyframes --method interval --interval 2.0 --resume
+python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
+python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
+python -m scripts.compute_embeddings --batch-size 32 --device cuda
+python -m backend.ingest_data
+python -m scripts.validate_pipeline --check-services
+```
+
+Kết quả sinh ra:
+
+```text
+data/keyframes/      keyframe .webp và maps .csv
+data/ocr_result/     OCR JSON
+data/transcripts/    Whisper transcript JSON/CSV
+data/embeddings/     SigLIP2 visual vectors .pt
+Milvus               video_keyframes 1152d + video_text_embeddings 1024d
+Elasticsearch        video_text_segments
+```
+
+### 8. Chạy backend và UI
+
+Chạy local Python:
+
+```powershell
+python backend/app.py
+```
+
+Hoặc chạy backend bằng Docker GPU profile:
+
+```powershell
+docker compose --profile api up --build
+```
+
+Mở:
+
+```text
+http://localhost:5000
+```
+
+Health check:
+
+```text
+http://localhost:5000/api/health
+```
+
+### 9. Quy tắc dữ liệu khi push Git
+
+Repo chỉ push cấu trúc `data/`:
+
+```text
+data/README.md
+data/**/.gitkeep
+```
+
+Không push:
+
+```text
+data/videos/*.mp4
+data/keyframes/**
+data/embeddings/**
+data/transcripts/**
+data/ocr_result/**
+data/captions/**
+volumes/**
+```
+
+Như vậy người khác clone repo sẽ có đủ folder để chạy, nhưng không kéo theo video nặng, vector, keyframe hoặc dữ liệu riêng của cuộc thi.
+
 ## Ý Tưởng Cốt Lõi
 
 Trong video retrieval, không nên phụ thuộc vào một loại score duy nhất.
@@ -41,10 +205,12 @@ flowchart LR
         KF --> OCR["OCR text"]
         KF --> CAP["Caption / VLM tags"]
         KF --> META["Metadata + timestamps"]
-        VIS --> MI["Milvus vector index"]
+        VIS --> MI["Milvus visual index 1152d"]
         OCR --> ES["Elasticsearch text index"]
         ASR --> ES
         CAP --> ES
+        ES --> TDE["BGE-M3 text embeddings"]
+        TDE --> TMI["Milvus text index 1024d"]
         META --> MF["Structured metadata"]
     end
 
@@ -53,8 +219,10 @@ flowchart LR
         PRE --> QE["Query embeddings"]
         QE --> DR["Dense visual retrieval"]
         PRE --> SR["Sparse OCR/transcript retrieval"]
+        PRE --> DTR["Dense text retrieval"]
         DR --> FU["Fusion / RRF"]
         SR --> FU
+        DTR --> FU
         MF --> FU
         FU --> RR["Cross-encoder rerank"]
         RR --> VR["Optional VLM/LLM rerank"]
@@ -67,11 +235,12 @@ flowchart LR
 | Phần | File chính | Trạng thái |
 | --- | --- | --- |
 | Flask API | [backend/app.py](backend/app.py) | Đã có |
-| Search engine | [backend/retrieval_system.py](backend/retrieval_system.py) | Đã có visual + transcript |
+| Search engine | [backend/retrieval_system.py](backend/retrieval_system.py) | Visual dense + sparse text + BGE-M3 dense text + RRF |
 | Config | [backend/config.py](backend/config.py) | Đọc từ `.env`/environment variables |
-| Ingest Milvus/ES | [backend/ingest_data.py](backend/ingest_data.py) | Đã có |
+| Ingest Milvus/ES | [backend/ingest_data.py](backend/ingest_data.py) | Visual collection 1152d + text collection 1024d + Elasticsearch |
 | Keyframe extraction | [scripts/extract_keyframes.py](scripts/extract_keyframes.py) | Đã có |
-| Visual embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | Jina CLIP v2 1024d mặc định, OpenCLIP dùng làm fallback |
+| Visual embedding | [scripts/compute_embeddings.py](scripts/compute_embeddings.py) | SigLIP2 SO400M NaFlex 1152d mặc định |
+| Dense text embedding | [utils/dense_text_encoder.py](utils/dense_text_encoder.py) | BGE-M3 1024d cho transcript/OCR/caption |
 | Whisper transcript | [scripts/extract_transcripts.py](scripts/extract_transcripts.py) | Đã có |
 | Web UI | [frontend](frontend) | React + Vite + TypeScript |
 | Docker DB | [docker-compose.yml](docker-compose.yml) | Milvus + Elasticsearch |
@@ -79,7 +248,7 @@ flowchart LR
 Điểm đã nâng cấp và cần tiếp tục benchmark:
 
 - Visual model mặc định đã chuyển sang `google/siglip2-so400m-patch16-naflex` 1152d; query tiếng Việt được dịch sang tiếng Anh trước khi dense visual search.
-- OCR/transcript/caption đã có nhánh search riêng, cần benchmark trọng số theo từng bộ video.
+- OCR/transcript/caption có hai nhánh: Elasticsearch sparse để bắt exact/fuzzy keyword và BGE-M3 dense text để bắt semantic match.
 - Fusion đã có RRF/hybrid, nhưng nên đo `nDCG@10`, `MRR@10`, `Recall@50` và latency theo từng tầng.
 - Reranker mặc định dùng `BAAI/bge-reranker-v2-m3` qua `sentence-transformers`, frontend có toggle `Rerank Top-K`.
 - Backend/model serving đã có Docker GPU profile; cần đảm bảo máy đã có NVIDIA Container Toolkit và đủ VRAM.

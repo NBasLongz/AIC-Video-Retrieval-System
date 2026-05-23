@@ -1,5 +1,9 @@
 # Runtime data and model artifacts
-data/
+data/**
+!data/
+!data/README.md
+!data/**/
+!data/**/.gitkeep
 volumes/
 *.pt
 *.pth
