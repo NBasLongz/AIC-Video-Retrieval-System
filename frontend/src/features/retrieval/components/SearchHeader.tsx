@@ -1,6 +1,7 @@
 import { Loader2, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { RetrievalMode } from "../types/retrieval.types";
+import { EvaluationConfigBar } from "./EvaluationConfigBar";
 import { ModeTabs } from "./ModeTabs";
 import { QuickAssistBar } from "./QuickAssistBar";
 import { SignalToggle } from "./SignalToggle";
@@ -66,12 +67,15 @@ export function SearchHeader({
 
   return (
     <header className="shrink-0 rounded-2xl bg-white/95 p-3 shadow-sm ring-1 ring-slate-200/70 backdrop-blur-xl">
-      <div className="mb-2 grid gap-2 xl:grid-cols-[minmax(320px,1fr)_auto] xl:items-center">
+      <div className="mb-2 grid gap-2 xl:grid-cols-[minmax(300px,1fr)_auto] xl:items-center">
         <div>
           <h1 className="text-xl font-black tracking-tight text-slate-950 lg:text-2xl">AIC Video Retrieval</h1>
           <p className="text-xs text-slate-500">Hybrid visual + OCR + transcript search, rerank top candidates, then submit the exact frame.</p>
         </div>
-        <ModeTabs mode={mode} setMode={setMode} />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <EvaluationConfigBar />
+          <ModeTabs mode={mode} setMode={setMode} />
+        </div>
       </div>
 
       <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_112px]">
