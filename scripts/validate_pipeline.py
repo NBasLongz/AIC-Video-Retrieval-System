@@ -120,7 +120,7 @@ def validate_videos_and_keyframes(report: ValidationReport):
             report.warn(f"{video_id}: total frame count is {total_frames}")
 
         frame_dir = keyframes_dir / video_id
-        keyframe_files = sorted(frame_dir.glob("keyframe_*.webp")) if frame_dir.exists() else []
+        keyframe_files = sorted(frame_dir.glob("keyframe_*.png")) if frame_dir.exists() else []
         rows = _load_map(video_id, report)
         if keyframe_files and not rows:
             report.error(f"{video_id}: keyframe files exist but timestamp map is missing or empty")
@@ -245,7 +245,7 @@ def validate_embeddings(report: ValidationReport):
 
         keyframe_dir = Path(config.KEYFRAMES_DIR) / video_dir.name
         if keyframe_dir.exists():
-            keyframe_count = len(list(keyframe_dir.glob("keyframe_*.webp")))
+            keyframe_count = len(list(keyframe_dir.glob("keyframe_*.png")))
             embedding_count = len(list(video_dir.glob("keyframe_*.pt")))
             if keyframe_count != embedding_count:
                 report.error(

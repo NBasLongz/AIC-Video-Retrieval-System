@@ -323,7 +323,7 @@ def compute_embeddings_for_video(
     
     # Get all keyframe images
     keyframe_files = sorted(
-        keyframes_dir.glob("keyframe_*.webp"),
+        keyframes_dir.glob("keyframe_*.png"),
         key=lambda x: int(x.stem.split("_")[-1])
     )
     

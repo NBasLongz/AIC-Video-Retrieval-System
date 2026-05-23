@@ -1,5 +1,5 @@
 """
-Script to extract keyframes from videos and save as WebP images with mapping CSV.
+Script to extract keyframes from videos and save as PNG images with mapping CSV.
 
 Usage:
     python scripts/extract_keyframes.py --method interval --interval 1.0
@@ -97,7 +97,7 @@ def extract_keyframes_interval(
 
         # fallback: inspect existing keyframe files
         if start_seconds == 0:
-            pattern = re.compile(r"keyframe_(\d+)\.webp$")
+            pattern = re.compile(r"keyframe_(\d+)\.png$")
             max_idx = -1
             if output_dir.exists():
                 for p in output_dir.iterdir():
@@ -136,11 +136,11 @@ def extract_keyframes_interval(
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
 
-            output_path = output_dir / f"keyframe_{keyframe_index}.webp"
+            output_path = output_dir / f"keyframe_{keyframe_index}.png"
             if output_path.exists():
                 logger.debug(f"Skipping existing keyframe file {output_path}")
             else:
-                img.save(output_path, "WebP", quality=90)
+                img.save(output_path, "PNG", optimize=True, compress_level=6)
 
             actual_seconds = target_frame / fps
             keyframe_data.append({
@@ -243,9 +243,9 @@ def extract_keyframes_uniform(
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame_rgb)
         
-        # Save as WebP
-        output_path = output_dir / f"keyframe_{keyframe_index}.webp"
-        img.save(output_path, "WebP", quality=90)
+        # Save as PNG
+        output_path = output_dir / f"keyframe_{keyframe_index}.png"
+        img.save(output_path, "PNG", optimize=True, compress_level=6)
         
         # Record mapping
         seconds = target_frame / fps

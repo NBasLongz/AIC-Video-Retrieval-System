@@ -128,7 +128,7 @@ python -m backend.ingest_data
 python -m scripts.validate_pipeline --check-services
 ```
 
-`--overwrite` rất quan trọng khi đổi từ interval cũ sang `1.0s/frame`: nó xóa keyframe/map cũ của video rồi tạo lại từ đầu, tránh trường hợp map 2 giây cũ bị trộn với keyframe 1 giây mới. Sau khi overwrite keyframe, phải chạy lại `scripts.compute_embeddings` và `backend.ingest_data` để vector trong Milvus khớp đúng `keyframe_<id>.webp`.
+`--overwrite` rất quan trọng khi đổi từ interval cũ sang `1.0s/frame`: nó xóa keyframe/map cũ của video rồi tạo lại từ đầu, tránh trường hợp map 2 giây cũ bị trộn với keyframe 1 giây mới. Sau khi overwrite keyframe, phải chạy lại `scripts.compute_embeddings` và `backend.ingest_data` để vector trong Milvus khớp đúng `keyframe_<id>.png`.
 
 Đo latency nhanh sau khi backend đã chạy:
 
@@ -139,7 +139,7 @@ python -m scripts.benchmark_latency --url http://localhost:5000
 Kết quả sinh ra:
 
 ```text
-data/keyframes/      keyframe .webp và maps .csv
+data/keyframes/      keyframe .png và maps .csv
 data/ocr_result/     OCR JSON
 data/transcripts/    Whisper transcript JSON/CSV
 data/embeddings/     SigLIP2 visual vectors .pt
@@ -410,8 +410,8 @@ python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
 Kết quả:
 
 ```text
-data/keyframes/L01_V001/keyframe_0.webp
-data/keyframes/L01_V001/keyframe_1.webp
+data/keyframes/L01_V001/keyframe_0.png
+data/keyframes/L01_V001/keyframe_1.png
 data/keyframes/maps/L01_V001_map.csv
 ```
 
@@ -424,7 +424,7 @@ FrameID,Seconds,OriginalFrame
 2,4.0,100
 ```
 
-Nó giúp biết `keyframe_1.webp` tương ứng giây nào và frame gốc nào trong video.
+Nó giúp biết `keyframe_1.png` tương ứng giây nào và frame gốc nào trong video.
 
 ### 3. Tính visual embeddings
 

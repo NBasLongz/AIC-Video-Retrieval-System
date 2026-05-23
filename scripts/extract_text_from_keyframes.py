@@ -141,7 +141,7 @@ def extract_text_from_keyframes(
         logger.info("Processing OCR for video: %s", current_video_id)
 
         keyframe_files = sorted(
-            video_dir.glob("keyframe_*.webp"),
+            video_dir.glob("keyframe_*.png"),
             key=lambda path: int(path.stem.split("_")[-1]),
         )
         for keyframe_path in keyframe_files:
@@ -191,4 +191,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

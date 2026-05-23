@@ -482,7 +482,7 @@ def ingest_ocr_data(es_client: Elasticsearch, folder_path: str) -> None:
     Supported current format:
     data/ocr_result/<video_id>/keyframe_0.json
     {
-      "keyframe": "keyframe_0.webp",
+      "keyframe": "keyframe_0.png",
       "time_seconds": 0.0,
       "ocr_results": [{"text": "...", "confidence": 0.95}]
     }

@@ -248,12 +248,24 @@ def agent_solve_api():
     })
 
 
-@app.route("/keyframes/<string:video_id>/keyframe_<int:keyframe_index>.webp")
+@app.route("/keyframes/<string:video_id>/keyframe_<int:keyframe_index>.png")
 def serve_frame_image(video_id, keyframe_index):
     try:
         keyframe_dir = os.path.join(config.KEYFRAMES_DIR, video_id)
-        filename = f"keyframe_{keyframe_index}.webp"
+        filename = f"keyframe_{keyframe_index}.png"
         return send_from_directory(keyframe_dir, filename)
+    except FileNotFoundError:
+        return "Keyframe not found", 404
+
+
+@app.route("/keyframes/<string:video_id>/keyframe_<int:keyframe_index>.webp")
+def serve_legacy_frame_image(video_id, keyframe_index):
+    try:
+        keyframe_dir = os.path.join(config.KEYFRAMES_DIR, video_id)
+        png_filename = f"keyframe_{keyframe_index}.png"
+        if os.path.exists(os.path.join(keyframe_dir, png_filename)):
+            return send_from_directory(keyframe_dir, png_filename)
+        return send_from_directory(keyframe_dir, f"keyframe_{keyframe_index}.webp")
     except FileNotFoundError:
         return "Keyframe not found", 404
 

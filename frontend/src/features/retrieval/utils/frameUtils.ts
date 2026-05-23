@@ -18,7 +18,7 @@ export function timeMsFromFrame(frame: number, fps = 25): number {
 }
 
 export function keyframeUrl(videoId: string, keyframeIndex: number): string {
-  return `/keyframes/${encodeURIComponent(videoId)}/keyframe_${keyframeIndex}.webp`;
+  return `/keyframes/${encodeURIComponent(videoId)}/keyframe_${keyframeIndex}.png`;
 }
 
 export function videoUrl(videoId: string): string {
