@@ -120,13 +120,15 @@ Tên file không có đuôi `.mp4` chính là `video_id`, dùng xuyên suốt ch
 ### 7. Chạy pipeline trích xuất offline
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite --ensure-compatible
 python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
 python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
 python -m backend.ingest_data
 python -m scripts.validate_pipeline --check-services
 ```
+
+Use `--ensure-compatible` for downloaded YouTube videos. Many recent files are AV1/VP9, and OpenCV can silently fail to read ranges of frames on Colab or Windows. The flag creates an H.264 copy in `data/videos_compatible/` before extraction and keeps the same `video_id` for keyframes/maps.
 
 `--overwrite` rất quan trọng khi đổi từ interval cũ sang `1.0s/frame`: nó xóa keyframe/map cũ của video rồi tạo lại từ đầu, tránh trường hợp map 2 giây cũ bị trộn với keyframe 1 giây mới. Sau khi overwrite keyframe, phải chạy lại `scripts.compute_embeddings` và `backend.ingest_data` để vector trong Milvus khớp đúng `keyframe_<id>.png`.
 
@@ -361,7 +363,7 @@ Offline ingestion là phần chuẩn bị dữ liệu trước khi thi hoặc tr
 ```powershell
 docker compose up -d etcd minio standalone elasticsearch redis
 
-python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite --ensure-compatible
 python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
 python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
@@ -404,7 +406,7 @@ Tên file nên là `video_id`, vì toàn bộ hệ thống dùng tên file để
 ### 2. Extract keyframes
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite --ensure-compatible
 ```
 
 Kết quả:
@@ -1289,7 +1291,7 @@ python -m scripts.setup_environment --all
 ### 4. Chuẩn bị dữ liệu
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite --ensure-compatible
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
 python -m scripts.run_transcript_pipeline --model large --language vi
 python -m backend.ingest_data

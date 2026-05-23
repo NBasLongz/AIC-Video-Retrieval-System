@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import cv2
@@ -29,6 +30,86 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+LOSSY_CODECS = {"av1", "vp9", "vp8", "hevc"}
+
+
+def _run_command(command: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(command, check=False, capture_output=True, text=True)
+
+
+def _probe_video_codec(video_path: Path) -> str | None:
+    if not shutil.which("ffprobe"):
+        return None
+    result = _run_command([
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "default=nokey=1:noprint_wrappers=1",
+        str(video_path),
+    ])
+    if result.returncode != 0:
+        logger.warning("ffprobe failed for %s: %s", video_path, result.stderr.strip())
+        return None
+    return result.stdout.strip().lower() or None
+
+
+def _ensure_compatible_video(video_path: Path, compatible_dir: Path, force: bool = False) -> Path:
+    codec = _probe_video_codec(video_path)
+    needs_transcode = force or codec in LOSSY_CODECS
+    if not needs_transcode:
+        return video_path
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError(
+            f"Video {video_path.name} uses codec '{codec}', but ffmpeg is not available. "
+            "Install ffmpeg or convert the video to H.264 before extracting keyframes."
+        )
+
+    compatible_dir.mkdir(parents=True, exist_ok=True)
+    output_path = compatible_dir / video_path.name
+    if output_path.exists() and output_path.stat().st_size > 0 and not force:
+        logger.info("Using existing compatible video: %s", output_path)
+        return output_path
+
+    logger.warning(
+        "Video %s uses codec '%s'. Transcoding to H.264 for reliable frame reads: %s",
+        video_path.name,
+        codec or "unknown",
+        output_path,
+    )
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(output_path),
+    ]
+    result = _run_command(command)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg transcode failed for {video_path}: {result.stderr[-2000:]}")
+    return output_path
+
+
 def extract_keyframes_interval(
     video_path: str,
     output_dir: Path,
@@ -36,6 +117,7 @@ def extract_keyframes_interval(
     interval_seconds: float = 1.0,
     resume: bool = False,
     overwrite: bool = False,
+    max_read_failures: int = 10,
 ):
     """
     Extract keyframes at regular time intervals.
@@ -74,6 +156,7 @@ def extract_keyframes_interval(
     
     keyframe_data = []
     keyframe_index = 0
+    read_failures = 0
 
     # Determine resume start
     start_seconds = 0.0
@@ -129,7 +212,15 @@ def extract_keyframes_interval(
             cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
             ret, frame = cap.read()
             if not ret:
+                read_failures += 1
                 logger.warning("Failed to read frame %s at %.3fs", target_frame, target_second)
+                if read_failures > max_read_failures:
+                    cap.release()
+                    raise RuntimeError(
+                        f"Too many failed frame reads for {video_path} ({read_failures}). "
+                        "This is often caused by AV1/VP9 decode issues. Rerun with "
+                        "--ensure-compatible to transcode to H.264 before extraction."
+                    )
                 pbar.update(1)
                 continue
 
@@ -166,7 +257,13 @@ def extract_keyframes_interval(
 
 
 def extract_keyframes_uniform(
-    video_path: str, output_dir: Path, map_file: Path, count: int = 100, resume: bool = False, overwrite: bool = False
+    video_path: str,
+    output_dir: Path,
+    map_file: Path,
+    count: int = 100,
+    resume: bool = False,
+    overwrite: bool = False,
+    max_read_failures: int = 10,
 ):
     """
     Extract a fixed number of uniformly distributed keyframes.
@@ -214,6 +311,7 @@ def extract_keyframes_uniform(
     
     keyframe_data = []
     keyframe_index = 0
+    read_failures = 0
 
     # If resuming, read existing OriginalFrame values to skip
     existing_frames = set()
@@ -233,7 +331,14 @@ def extract_keyframes_uniform(
         ret, frame = cap.read()
         
         if not ret:
+            read_failures += 1
             logger.warning(f"Failed to read frame {target_frame}")
+            if read_failures > max_read_failures:
+                cap.release()
+                raise RuntimeError(
+                    f"Too many failed frame reads for {video_path} ({read_failures}). "
+                    "Rerun with --ensure-compatible to transcode to H.264 before extraction."
+                )
             continue
         if resume and target_frame in existing_frames:
             logger.debug(f"Skipping already extracted frame {target_frame}")
@@ -278,6 +383,13 @@ def process_video(video_id: str, method: str = "interval", **kwargs):
     if not video_path.exists():
         logger.error(f"Video not found: {video_path}")
         return False
+
+    if kwargs.get("ensure_compatible", False):
+        video_path = _ensure_compatible_video(
+            video_path,
+            Path(kwargs.get("compatible_dir", Path(config.DATA_DIR) / "videos_compatible")),
+            force=kwargs.get("force_transcode", False),
+        )
     
     output_dir = Path(config.KEYFRAMES_DIR) / video_id
     map_file = Path(config.KEYFRAMES_DIR) / "maps" / f"{video_id}_map.csv"
@@ -288,12 +400,30 @@ def process_video(video_id: str, method: str = "interval", **kwargs):
         interval = kwargs.get("interval", config.KEYFRAME_INTERVAL_SECONDS)
         resume = kwargs.get("resume", False)
         overwrite = kwargs.get("overwrite", False)
-        extract_keyframes_interval(str(video_path), output_dir, map_file, interval, resume=resume, overwrite=overwrite)
+        max_read_failures = kwargs.get("max_read_failures", 10)
+        extract_keyframes_interval(
+            str(video_path),
+            output_dir,
+            map_file,
+            interval,
+            resume=resume,
+            overwrite=overwrite,
+            max_read_failures=max_read_failures,
+        )
     elif method == "uniform":
         count = kwargs.get("count", 100)
         resume = kwargs.get("resume", False)
         overwrite = kwargs.get("overwrite", False)
-        extract_keyframes_uniform(str(video_path), output_dir, map_file, count, resume=resume, overwrite=overwrite)
+        max_read_failures = kwargs.get("max_read_failures", 10)
+        extract_keyframes_uniform(
+            str(video_path),
+            output_dir,
+            map_file,
+            count,
+            resume=resume,
+            overwrite=overwrite,
+            max_read_failures=max_read_failures,
+        )
     else:
         logger.error(f"Unknown method: {method}")
         return False
@@ -354,6 +484,28 @@ def main():
         action="store_true",
         help="Delete existing keyframes/map for the selected videos before extraction. Use this after changing interval.",
     )
+    parser.add_argument(
+        "--ensure-compatible",
+        action="store_true",
+        help="Transcode AV1/VP9/HEVC videos to H.264 before extraction to avoid OpenCV decode failures.",
+    )
+    parser.add_argument(
+        "--compatible-dir",
+        type=str,
+        default=str(Path(config.DATA_DIR) / "videos_compatible"),
+        help="Directory for H.264 compatible video copies when --ensure-compatible is enabled.",
+    )
+    parser.add_argument(
+        "--force-transcode",
+        action="store_true",
+        help="Always recreate the compatible H.264 video copy.",
+    )
+    parser.add_argument(
+        "--max-read-failures",
+        type=int,
+        default=10,
+        help="Abort extraction after this many failed frame reads. Prevents silent broken keyframe maps.",
+    )
     
     args = parser.parse_args()
     
@@ -365,6 +517,10 @@ def main():
             count=args.count,
             resume=args.resume,
             overwrite=args.overwrite,
+            ensure_compatible=args.ensure_compatible,
+            compatible_dir=args.compatible_dir,
+            force_transcode=args.force_transcode,
+            max_read_failures=args.max_read_failures,
         )
     else:
         process_all_videos(
@@ -373,6 +529,10 @@ def main():
             count=args.count,
             resume=args.resume,
             overwrite=args.overwrite,
+            ensure_compatible=args.ensure_compatible,
+            compatible_dir=args.compatible_dir,
+            force_transcode=args.force_transcode,
+            max_read_failures=args.max_read_failures,
         )
 
 
