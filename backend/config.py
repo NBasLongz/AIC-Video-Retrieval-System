@@ -725,6 +725,7 @@ TRANSCRIPT_INDEX = _env("TRANSCRIPT_INDEX", "video_text_segments")
 # Backwards-compatible alias: this index now stores transcript, OCR, and captions.
 MULTIMODAL_TEXT_INDEX = TRANSCRIPT_INDEX
 DEFAULT_FALLBACK_FPS = _env_float("DEFAULT_FALLBACK_FPS", 25.0)
+KEYFRAME_INTERVAL_SECONDS = _env_float("KEYFRAME_INTERVAL_SECONDS", 1.0)
 
 # --- Evaluation Server Settings ---
 # ⚠️ KHI SERVER THAY ĐỔI → CHỈ SỬA 3 DÒNG DƯỚI ĐÂY

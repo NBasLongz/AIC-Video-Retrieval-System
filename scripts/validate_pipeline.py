@@ -122,9 +122,26 @@ def validate_videos_and_keyframes(report: ValidationReport):
         frame_dir = keyframes_dir / video_id
         keyframe_files = sorted(frame_dir.glob("keyframe_*.webp")) if frame_dir.exists() else []
         rows = _load_map(video_id, report)
+        if keyframe_files and not rows:
+            report.error(f"{video_id}: keyframe files exist but timestamp map is missing or empty")
         if rows and keyframe_files and len(rows) != len(keyframe_files):
-            report.warn(
+            report.error(
                 f"{video_id}: keyframe files ({len(keyframe_files)}) != map rows ({len(rows)})"
+            )
+
+        keyframe_ids = set()
+        for path in keyframe_files:
+            try:
+                keyframe_ids.add(int(path.stem.split("_")[-1]))
+            except (ValueError, IndexError):
+                report.error(f"{video_id}: invalid keyframe filename {path.name}")
+        row_ids = {row["FrameID"] for row in rows}
+        if keyframe_ids and row_ids and keyframe_ids != row_ids:
+            missing_files = sorted(row_ids - keyframe_ids)[:10]
+            missing_rows = sorted(keyframe_ids - row_ids)[:10]
+            report.error(
+                f"{video_id}: keyframe filenames do not match map FrameID values. "
+                f"missing files for rows={missing_files}, missing map rows for files={missing_rows}"
             )
 
         last_seconds = -1.0
@@ -145,6 +162,22 @@ def validate_videos_and_keyframes(report: ValidationReport):
                 report.warn(
                     f"{video_id}: OriginalFrame mismatch at FrameID={frame_id}: "
                     f"seconds*fps={seconds * fps:.1f}, OriginalFrame={original_frame}"
+                )
+        expected_interval = getattr(config, "KEYFRAME_INTERVAL_SECONDS", 1.0)
+        if rows and expected_interval > 0:
+            intervals = [
+                round(rows[idx]["Seconds"] - rows[idx - 1]["Seconds"], 3)
+                for idx in range(1, len(rows))
+            ]
+            bad_intervals = [
+                value for value in intervals
+                if abs(value - expected_interval) > max(0.08, expected_interval * 0.08)
+            ]
+            if bad_intervals:
+                report.warn(
+                    f"{video_id}: {len(bad_intervals)} keyframe intervals differ from "
+                    f"KEYFRAME_INTERVAL_SECONDS={expected_interval}. "
+                    "If you changed interval, rerun extract_keyframes --overwrite and recompute embeddings."
                 )
 
 

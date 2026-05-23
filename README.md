@@ -68,6 +68,15 @@ ASR_MODEL=large-v3
 OCR_ENGINE=paddleocr
 ```
 
+Timing mặc định:
+
+```text
+KEYFRAME_INTERVAL_SECONDS=1.0
+DEFAULT_FALLBACK_FPS=25.0
+```
+
+Mỗi video vẫn dùng FPS thật đọc từ file bằng OpenCV. `DEFAULT_FALLBACK_FPS` chỉ dùng khi file video không đọc được FPS.
+
 ### 5. Chạy database bằng Docker
 
 ```powershell
@@ -100,13 +109,15 @@ Tên file không có đuôi `.mp4` chính là `video_id`, dùng xuyên suốt ch
 ### 7. Chạy pipeline trích xuất offline
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 2.0 --resume
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
 python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
 python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
 python -m backend.ingest_data
 python -m scripts.validate_pipeline --check-services
 ```
+
+`--overwrite` rất quan trọng khi đổi từ interval cũ sang `1.0s/frame`: nó xóa keyframe/map cũ của video rồi tạo lại từ đầu, tránh trường hợp map 2 giây cũ bị trộn với keyframe 1 giây mới. Sau khi overwrite keyframe, phải chạy lại `scripts.compute_embeddings` và `backend.ingest_data` để vector trong Milvus khớp đúng `keyframe_<id>.webp`.
 
 Kết quả sinh ra:
 
@@ -262,7 +273,7 @@ Offline ingestion là phần chuẩn bị dữ liệu trước khi thi hoặc tr
 ```powershell
 docker compose up -d etcd minio standalone elasticsearch redis
 
-python -m scripts.extract_keyframes --method interval --interval 2.0 --resume
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
 python -m scripts.extract_text_from_keyframes --engine paddleocr --languages en,vi
 python -m scripts.extract_transcripts --model large-v3 --language vi --vietnamese-prompt --device cuda
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
@@ -305,7 +316,7 @@ Tên file nên là `video_id`, vì toàn bộ hệ thống dùng tên file để
 ### 2. Extract keyframes
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 2.0
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
 ```
 
 Kết quả:
@@ -380,11 +391,14 @@ python -m scripts.extract_transcripts --model large-v3 --language vi --vietnames
 Khuyến nghị thi đấu:
 
 ```text
-openai-whisper: dễ dùng, baseline ổn
-faster-whisper: nhanh hơn khi chạy GPU, hợp production/competition
-large-v3: ưu tiên accuracy
+large-v3 + language=vi + vietnamese prompt: ưu tiên accuracy cho tiếng Việt
+beam_size=5, best_of=5, temperature=0,0.2,0.4: cân bằng accuracy và chống kẹt decoding
+condition_on_previous_text=true: giữ ngữ cảnh tốt hơn; tắt nếu thấy hallucination lặp
+faster-whisper: nên dùng sau nếu cần tăng tốc inference ASR trên GPU
 medium/small: dùng khi GPU yếu hoặc cần ingest nhanh
 ```
+
+Transcript không phụ thuộc FPS để sinh timestamp; Whisper trả `start/end` theo giây. Khi ingest, hệ thống lấy `start` của segment và map sang keyframe gần nhất bằng `data/keyframes/maps/<video_id>_map.csv`, nên video 25 FPS, 29.97 FPS hay 50 FPS đều đi qua map thật của từng video.
 
 Kết quả transcript nên có:
 
@@ -1187,7 +1201,7 @@ python -m scripts.setup_environment --all
 ### 4. Chuẩn bị dữ liệu
 
 ```powershell
-python -m scripts.extract_keyframes --method interval --interval 2.0
+python -m scripts.extract_keyframes --method interval --interval 1.0 --overwrite
 python -m scripts.compute_embeddings --batch-size 32 --device cuda
 python -m scripts.run_transcript_pipeline --model large --language vi
 python -m backend.ingest_data

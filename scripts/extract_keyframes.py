@@ -12,6 +12,7 @@ import csv
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 
 import cv2
@@ -34,6 +35,7 @@ def extract_keyframes_interval(
     map_file: Path,
     interval_seconds: float = 1.0,
     resume: bool = False,
+    overwrite: bool = False,
 ):
     """
     Extract keyframes at regular time intervals.
@@ -53,20 +55,28 @@ def extract_keyframes_interval(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     if fps <= 0:
-        logger.warning(f"Invalid FPS for {video_path}, using default 25")
-        fps = 25.0
+        logger.warning("Invalid FPS for %s, using fallback %.3f", video_path, config.DEFAULT_FALLBACK_FPS)
+        fps = config.DEFAULT_FALLBACK_FPS
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be > 0")
     
     logger.info(f"Video FPS: {fps}, Total frames: {total_frames}")
+
+    if overwrite:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        if map_file.exists():
+            map_file.unlink()
+        resume = False
     
     output_dir.mkdir(parents=True, exist_ok=True)
     map_file.parent.mkdir(parents=True, exist_ok=True)
     
-    interval_frames = int(fps * interval_seconds)
     keyframe_data = []
     keyframe_index = 0
 
     # Determine resume start
-    start_frame = 0
+    start_seconds = 0.0
     if resume and output_dir.exists():
         # Try reading last row from map_file
         if map_file.exists():
@@ -76,17 +86,17 @@ def extract_keyframes_interval(
                     if rows:
                         last = rows[-1]
                         try:
-                            last_frame = int(last.get("OriginalFrame", 0))
                             last_id = int(last.get("FrameID", 0))
-                            start_frame = last_frame + interval_frames
+                            last_seconds = float(last.get("Seconds", 0.0))
+                            start_seconds = (int(last_seconds / interval_seconds) + 1) * interval_seconds
                             keyframe_index = last_id + 1
                         except Exception:
-                            start_frame = 0
+                            start_seconds = 0.0
             except Exception:
-                start_frame = 0
+                start_seconds = 0.0
 
         # fallback: inspect existing keyframe files
-        if start_frame == 0:
+        if start_seconds == 0:
             pattern = re.compile(r"keyframe_(\d+)\.webp$")
             max_idx = -1
             if output_dir.exists():
@@ -98,50 +108,47 @@ def extract_keyframes_interval(
                             max_idx = idx
             if max_idx >= 0:
                 keyframe_index = max_idx + 1
-                start_frame = (max_idx + 1) * interval_frames
+                start_seconds = keyframe_index * interval_seconds
 
     # If start_frame beyond total, nothing to do
+    start_frame = int(round(start_seconds * fps))
     if start_frame >= total_frames:
         logger.info("Nothing to resume, already extracted all keyframes.")
         cap.release()
         return
 
-    # Seek to start_frame
-    if start_frame > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        frame_num = start_frame
-    else:
-        frame_num = 0
+    duration_seconds = total_frames / fps if fps > 0 else 0.0
+    target_seconds = np.arange(start_seconds, duration_seconds, interval_seconds, dtype=np.float64)
 
-    with tqdm(total=max(0, total_frames - frame_num), desc="Extracting keyframes") as pbar:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
+    with tqdm(total=len(target_seconds), desc="Extracting keyframes") as pbar:
+        for target_second in target_seconds:
+            target_frame = int(round(float(target_second) * fps))
+            if target_frame >= total_frames:
                 break
 
-            if frame_num % interval_frames == 0:
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame_rgb)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = cap.read()
+            if not ret:
+                logger.warning("Failed to read frame %s at %.3fs", target_frame, target_second)
+                pbar.update(1)
+                continue
 
-                # Save as WebP
-                output_path = output_dir / f"keyframe_{keyframe_index}.webp"
-                if output_path.exists():
-                    logger.debug(f"Skipping existing keyframe file {output_path}")
-                else:
-                    img.save(output_path, "WebP", quality=90)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
 
-                # Record mapping
-                seconds = frame_num / fps
-                keyframe_data.append({
-                    "FrameID": keyframe_index,
-                    "Seconds": round(seconds, 3),
-                    "OriginalFrame": frame_num,
-                })
+            output_path = output_dir / f"keyframe_{keyframe_index}.webp"
+            if output_path.exists():
+                logger.debug(f"Skipping existing keyframe file {output_path}")
+            else:
+                img.save(output_path, "WebP", quality=90)
 
-                keyframe_index += 1
-
-            frame_num += 1
+            actual_seconds = target_frame / fps
+            keyframe_data.append({
+                "FrameID": keyframe_index,
+                "Seconds": round(actual_seconds, 3),
+                "OriginalFrame": target_frame,
+            })
+            keyframe_index += 1
             pbar.update(1)
     
     cap.release()
@@ -159,7 +166,7 @@ def extract_keyframes_interval(
 
 
 def extract_keyframes_uniform(
-    video_path: str, output_dir: Path, map_file: Path, count: int = 100, resume: bool = False
+    video_path: str, output_dir: Path, map_file: Path, count: int = 100, resume: bool = False, overwrite: bool = False
 ):
     """
     Extract a fixed number of uniformly distributed keyframes.
@@ -179,8 +186,8 @@ def extract_keyframes_uniform(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     if fps <= 0:
-        logger.warning(f"Invalid FPS for {video_path}, using default 25")
-        fps = 25.0
+        logger.warning("Invalid FPS for %s, using fallback %.3f", video_path, config.DEFAULT_FALLBACK_FPS)
+        fps = config.DEFAULT_FALLBACK_FPS
     
     if total_frames < count:
         logger.warning(f"Video has only {total_frames} frames, extracting all")
@@ -188,6 +195,13 @@ def extract_keyframes_uniform(
     
     logger.info(f"Video FPS: {fps}, Total frames: {total_frames}")
     logger.info(f"Extracting {count} uniformly distributed keyframes")
+
+    if overwrite:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        if map_file.exists():
+            map_file.unlink()
+        resume = False
     
     output_dir.mkdir(parents=True, exist_ok=True)
     map_file.parent.mkdir(parents=True, exist_ok=True)
@@ -271,13 +285,15 @@ def process_video(video_id: str, method: str = "interval", **kwargs):
     logger.info(f"Processing video: {video_id}")
     
     if method == "interval":
-        interval = kwargs.get("interval", 2.0)
+        interval = kwargs.get("interval", config.KEYFRAME_INTERVAL_SECONDS)
         resume = kwargs.get("resume", False)
-        extract_keyframes_interval(str(video_path), output_dir, map_file, interval, resume=resume)
+        overwrite = kwargs.get("overwrite", False)
+        extract_keyframes_interval(str(video_path), output_dir, map_file, interval, resume=resume, overwrite=overwrite)
     elif method == "uniform":
         count = kwargs.get("count", 100)
         resume = kwargs.get("resume", False)
-        extract_keyframes_uniform(str(video_path), output_dir, map_file, count, resume=resume)
+        overwrite = kwargs.get("overwrite", False)
+        extract_keyframes_uniform(str(video_path), output_dir, map_file, count, resume=resume, overwrite=overwrite)
     else:
         logger.error(f"Unknown method: {method}")
         return False
@@ -314,8 +330,8 @@ def main():
     parser.add_argument(
         "--interval",
         type=float,
-        default=2.0,
-        help="Time interval in seconds (for interval method). Default: 2.0",
+        default=config.KEYFRAME_INTERVAL_SECONDS,
+        help=f"Time interval in seconds (for interval method). Default: {config.KEYFRAME_INTERVAL_SECONDS}",
     )
     parser.add_argument(
         "--count",
@@ -333,6 +349,11 @@ def main():
         action="store_true",
         help="Resume extraction for videos when keyframes/map already exist",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete existing keyframes/map for the selected videos before extraction. Use this after changing interval.",
+    )
     
     args = parser.parse_args()
     
@@ -343,6 +364,7 @@ def main():
             interval=args.interval,
             count=args.count,
             resume=args.resume,
+            overwrite=args.overwrite,
         )
     else:
         process_all_videos(
@@ -350,6 +372,7 @@ def main():
             interval=args.interval,
             count=args.count,
             resume=args.resume,
+            overwrite=args.overwrite,
         )
 
 

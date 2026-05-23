@@ -79,6 +79,8 @@ services:
       MILVUS_HOST: standalone
       ELASTIC_HOST: elasticsearch
       REDIS_URL: redis://redis:6379/0
+      DEFAULT_FALLBACK_FPS: 25.0
+      KEYFRAME_INTERVAL_SECONDS: 1.0
       VISUAL_MODEL_PROVIDER: siglip2
       VISUAL_MODEL: google/siglip2-so400m-patch16-naflex
       VECTOR_DIMENSION: 1152

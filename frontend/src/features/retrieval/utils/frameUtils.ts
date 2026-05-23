@@ -6,7 +6,7 @@ export function formatTime(seconds: number): string {
 }
 
 export function timestampToFrame(timestamp: number, fps = 25): number {
-  return Math.max(0, Math.floor(timestamp * fps));
+  return Math.max(0, Math.round(timestamp * fps));
 }
 
 export function frameToTimestamp(frame: number, fps = 25): number {
@@ -24,4 +24,3 @@ export function keyframeUrl(videoId: string, keyframeIndex: number): string {
 export function videoUrl(videoId: string): string {
   return `/videos/${encodeURIComponent(videoId)}`;
 }
-

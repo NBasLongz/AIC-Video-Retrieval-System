@@ -44,7 +44,7 @@ def get_video_fps(video_id: str) -> float:
         except Exception as e:
             logger.warning(f"Error reading FPS for {video_id}: {e}")
             
-    return 25.0  # Fallback default value
+    return config.DEFAULT_FALLBACK_FPS
 
 def _load_keyframe_map(video_id: str):
     maps_dir = Path(config.KEYFRAMES_DIR) / "maps"
