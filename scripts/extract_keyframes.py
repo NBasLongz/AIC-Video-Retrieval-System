@@ -18,7 +18,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
 from backend import config
@@ -31,10 +30,51 @@ logger = logging.getLogger(__name__)
 
 
 LOSSY_CODECS = {"av1", "vp9", "vp8", "hevc"}
+PNG_COMPRESSION = 3
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, capture_output=True, text=True)
+
+
+def _is_valid_image(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    return image is not None and image.size > 0
+
+
+def _save_frame_png(frame: np.ndarray, output_path: Path) -> None:
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    ok, encoded = cv2.imencode(
+        ".png",
+        frame,
+        [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION],
+    )
+    if not ok:
+        raise RuntimeError(f"Failed to encode PNG for {output_path}")
+
+    try:
+        encoded.tofile(str(tmp_path))
+        if not _is_valid_image(tmp_path):
+            raise RuntimeError(f"Encoded PNG is not readable: {tmp_path}")
+        os.replace(tmp_path, output_path)
+        if not _is_valid_image(output_path):
+            raise RuntimeError(f"Saved PNG is not readable: {output_path}")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _next_keyframe_index(output_dir: Path) -> int:
+    pattern = re.compile(r"keyframe_(\d+)\.png$")
+    max_idx = -1
+    if output_dir.exists():
+        for path in output_dir.iterdir():
+            match = pattern.search(path.name)
+            if match and _is_valid_image(path):
+                max_idx = max(max_idx, int(match.group(1)))
+    return max_idx + 1
 
 
 def _probe_video_codec(video_path: Path) -> str | None:
@@ -180,17 +220,8 @@ def extract_keyframes_interval(
 
         # fallback: inspect existing keyframe files
         if start_seconds == 0:
-            pattern = re.compile(r"keyframe_(\d+)\.png$")
-            max_idx = -1
-            if output_dir.exists():
-                for p in output_dir.iterdir():
-                    m = pattern.search(p.name)
-                    if m:
-                        idx = int(m.group(1))
-                        if idx > max_idx:
-                            max_idx = idx
-            if max_idx >= 0:
-                keyframe_index = max_idx + 1
+            keyframe_index = _next_keyframe_index(output_dir)
+            if keyframe_index > 0:
                 start_seconds = keyframe_index * interval_seconds
 
     # If start_frame beyond total, nothing to do
@@ -224,14 +255,13 @@ def extract_keyframes_interval(
                 pbar.update(1)
                 continue
 
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame_rgb)
-
             output_path = output_dir / f"keyframe_{keyframe_index}.png"
-            if output_path.exists():
+            if _is_valid_image(output_path):
                 logger.debug(f"Skipping existing keyframe file {output_path}")
             else:
-                img.save(output_path, "PNG", optimize=True, compress_level=6)
+                if output_path.exists():
+                    logger.warning("Replacing corrupt or empty keyframe file: %s", output_path)
+                _save_frame_png(frame, output_path)
 
             actual_seconds = target_frame / fps
             keyframe_data.append({
@@ -325,6 +355,7 @@ def extract_keyframes_uniform(
                         pass
         except Exception:
             existing_frames = set()
+        keyframe_index = _next_keyframe_index(output_dir)
 
     for target_frame in tqdm(frame_indices, desc="Extracting keyframes"):
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
@@ -344,13 +375,9 @@ def extract_keyframes_uniform(
             logger.debug(f"Skipping already extracted frame {target_frame}")
             continue
         
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(frame_rgb)
-        
         # Save as PNG
         output_path = output_dir / f"keyframe_{keyframe_index}.png"
-        img.save(output_path, "PNG", optimize=True, compress_level=6)
+        _save_frame_png(frame, output_path)
         
         # Record mapping
         seconds = target_frame / fps
