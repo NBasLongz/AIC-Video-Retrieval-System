@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { submitFrame } from "../api/submitApi";
-import { timeMsFromFrame } from "../utils/frameUtils";
+import { computeSubmitTime } from "../utils/submitTime";
 import type { RetrievalResult, SubmitHistoryItem } from "../types/retrieval.types";
 
 const STORAGE_KEY = "aic-submit-history";
@@ -22,9 +22,7 @@ export function useSubmitFrame(query: string) {
 
   const submit = useCallback(
     async (item: RetrievalResult, frameOverride?: number) => {
-      const frame = frameOverride ?? item.frame;
-      const fps = Number(item.raw.fps || 25);
-      const timeMs = timeMsFromFrame(frame, fps);
+      const { frame, timestamp, timeMs } = computeSubmitTime(item, frameOverride);
       const id = `${item.videoId}-${frame}`;
 
       try {
@@ -34,7 +32,7 @@ export function useSubmitFrame(query: string) {
             id,
             videoId: item.videoId,
             frame,
-            timestamp: timeMs / 1000,
+            timestamp,
             query,
             score: item.score,
             status: "success",
@@ -48,7 +46,7 @@ export function useSubmitFrame(query: string) {
             id,
             videoId: item.videoId,
             frame,
-            timestamp: timeMs / 1000,
+            timestamp,
             query,
             score: item.score,
             status: "failed",
@@ -69,4 +67,3 @@ export function useSubmitFrame(query: string) {
     submittedIds: new Set(history.filter((item) => item.status === "success").map((item) => item.id)),
   };
 }
-

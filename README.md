@@ -156,6 +156,61 @@ Health check:
 http://localhost:5000/api/health
 ```
 
+### 8.1 Công thức submit tuyệt đối không được đổi
+
+Evaluation server nhận milliseconds, không nhận frame index. UI/backend mới giữ đúng contract của repo cũ:
+
+```text
+Submit payload cuối cùng = videoId + timeMs
+```
+
+Với visual/OCR/caption result, backend đã map:
+
+```text
+keyframe_index / FrameID -> frame_number / OriginalFrame
+```
+
+Frontend tính:
+
+```ts
+const fps = result.fps || 25;
+const frameNumber = result.frame_number;
+const timeMs = Math.round((frameNumber / fps) * 1000);
+```
+
+Với transcript-only result, frontend ưu tiên timestamp segment:
+
+```ts
+const timeMs = Math.round(result.start_seconds * 1000);
+```
+
+Với video modal, khi tua từng frame rồi submit:
+
+```ts
+const currentFrame = Math.floor(video.currentTime * fps);
+const timeMs = Math.round((currentFrame / fps) * 1000);
+```
+
+Backend `/api/submit` chỉ proxy payload này lên evaluation server:
+
+```json
+{
+  "answerSets": [
+    {
+      "answers": [
+        {
+          "mediaItemName": "L22_V010",
+          "start": "892760",
+          "end": "892760"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Nếu công thức submit thay đổi, phải kiểm lại bằng `frame_number`, `fps`, `start_seconds` trong response `/search` trước khi thi.
+
 ### 9. Quy tắc dữ liệu khi push Git
 
 Repo chỉ push cấu trúc `data/`:

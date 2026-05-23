@@ -6,7 +6,7 @@ export function formatTime(seconds: number): string {
 }
 
 export function timestampToFrame(timestamp: number, fps = 25): number {
-  return Math.max(0, Math.round(timestamp * fps));
+  return Math.max(0, Math.floor(timestamp * fps));
 }
 
 export function frameToTimestamp(frame: number, fps = 25): number {
