@@ -1,4 +1,6 @@
 import logging
+import json
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -81,10 +83,141 @@ class TextEncoder:
             self.model_name,
             trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
         )
-        self._model = AutoModel.from_pretrained(
+        if self.provider == "siglip2" and config.VISUAL_TEXT_ONLY_MODEL and config.VISUAL_STREAM_SAFE_LOAD:
+            self._load_siglip2_text_streaming()
+            return
+
+        model_cls = AutoModel
+        if self.provider == "siglip2" and config.VISUAL_TEXT_ONLY_MODEL:
+            try:
+                from transformers import Siglip2TextModel
+
+                model_cls = Siglip2TextModel
+                logger.info("Using Siglip2TextModel text-only loader to avoid loading the vision branch.")
+            except ImportError:
+                logger.warning("Siglip2TextModel is unavailable; falling back to AutoModel.")
+
+        self._model = model_cls.from_pretrained(
             self.model_name,
             trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
+            **self._from_pretrained_kwargs(),
         ).to(self.device)
+
+    def _load_siglip2_text_streaming(self):
+        try:
+            from huggingface_hub import snapshot_download
+            from transformers import Siglip2Config, Siglip2TextModel
+        except ImportError as exc:
+            raise ImportError("Streaming SigLIP2 text load requires huggingface_hub and transformers.") from exc
+
+        snapshot_dir = Path(snapshot_download(self.model_name, local_files_only=True))
+        checkpoint_path = snapshot_dir / "model.safetensors"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"SigLIP2 checkpoint not found in local cache: {checkpoint_path}")
+
+        logger.info(
+            "Streaming SigLIP2 text weights from %s without memory-mapping the full checkpoint...",
+            checkpoint_path,
+        )
+        full_config = Siglip2Config.from_pretrained(
+            self.model_name,
+            trust_remote_code=config.MODEL_TRUST_REMOTE_CODE,
+            local_files_only=True,
+        )
+        dtype = self._torch_dtype()
+        original_default_dtype = torch.get_default_dtype()
+        try:
+            if dtype is not None and dtype != "auto":
+                torch.set_default_dtype(dtype)
+            self._model = Siglip2TextModel(full_config.text_config)
+        finally:
+            torch.set_default_dtype(original_default_dtype)
+        self._model = self._model.to(self.device)
+
+        self._stream_safetensors_into_model(checkpoint_path, self._model)
+
+    def _stream_safetensors_into_model(self, checkpoint_path: Path, model: torch.nn.Module):
+        dtype_map = {
+            "F64": np.float64,
+            "F32": np.float32,
+            "F16": np.float16,
+            "BF16": np.uint16,
+            "I64": np.int64,
+            "I32": np.int32,
+            "I16": np.int16,
+            "I8": np.int8,
+            "U8": np.uint8,
+            "BOOL": np.bool_,
+        }
+        itemsize_map = {name: np.dtype(dtype).itemsize for name, dtype in dtype_map.items()}
+        tensors = dict(model.named_parameters())
+        tensors.update(dict(model.named_buffers()))
+        loaded = 0
+        missing = []
+
+        with checkpoint_path.open("rb") as handle, torch.no_grad():
+            header_len = int.from_bytes(handle.read(8), "little")
+            header = json.loads(handle.read(header_len).decode("utf-8"))
+            data_start = 8 + header_len
+
+            for name, target in tensors.items():
+                meta = header.get(name)
+                if meta is None:
+                    missing.append(name)
+                    continue
+                dtype_name = meta["dtype"]
+                if dtype_name not in dtype_map:
+                    raise ValueError(f"Unsupported safetensors dtype {dtype_name!r} for {name}")
+                shape = tuple(int(value) for value in meta["shape"])
+                if tuple(target.shape) != shape:
+                    raise ValueError(f"Shape mismatch for {name}: checkpoint={shape} model={tuple(target.shape)}")
+                start, end = (int(value) for value in meta["data_offsets"])
+                expected_bytes = end - start
+                itemsize = itemsize_map[dtype_name]
+                total_elements = expected_bytes // itemsize
+                source_dtype = dtype_map[dtype_name]
+
+                flat_target = target.data.view(-1)
+                max_bytes = 64 * 1024 * 1024
+                max_elements = max(1, max_bytes // itemsize)
+                for offset in range(0, total_elements, max_elements):
+                    count = min(max_elements, total_elements - offset)
+                    handle.seek(data_start + start + offset * itemsize)
+                    raw = handle.read(count * itemsize)
+                    array = np.frombuffer(raw, dtype=source_dtype, count=count)
+                    if dtype_name == "BF16":
+                        tensor = torch.from_numpy(array.astype(np.uint16)).view(torch.bfloat16)
+                    else:
+                        tensor = torch.from_numpy(array)
+                    tensor = tensor.to(device=flat_target.device, dtype=flat_target.dtype)
+                    flat_target[offset:offset + count].copy_(tensor)
+                loaded += 1
+
+        if missing:
+            logger.warning("SigLIP2 streaming loader left %s model tensors at init values.", len(missing))
+        logger.info("Streamed %s SigLIP2 text tensors into memory.", loaded)
+
+    def _from_pretrained_kwargs(self):
+        kwargs = {}
+        dtype = self._torch_dtype()
+        if dtype is not None:
+            kwargs["torch_dtype"] = dtype
+        if config.VISUAL_LOW_CPU_MEM_USAGE:
+            kwargs["low_cpu_mem_usage"] = True
+        return kwargs
+
+    def _torch_dtype(self):
+        dtype = (config.VISUAL_MODEL_DTYPE or "").strip().lower()
+        if dtype in {"", "none", "default", "float32", "fp32"}:
+            return None
+        if dtype in {"auto"}:
+            return "auto"
+        if dtype in {"float16", "fp16", "half"}:
+            return torch.float16
+        if dtype in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        logger.warning("Unsupported VISUAL_MODEL_DTYPE=%r; using model default dtype.", config.VISUAL_MODEL_DTYPE)
+        return None
 
     def _feature_tensor(self, outputs):
         if isinstance(outputs, torch.Tensor):

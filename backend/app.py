@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend import config
 from backend.retrieval_system import VideoRetrievalSystem
+from utils.cache_config import auto_configure_model_caches
 from utils.query_processing import decompose_query
 from utils.video_metadata import load_video_metadata
 
@@ -43,6 +44,18 @@ FRONTEND_DIST = os.path.join(ROOT_DIR, "frontend", "dist")
 app = Flask(__name__, 
             template_folder=os.path.join(ROOT_DIR, 'templates'),
             static_folder=os.path.join(ROOT_DIR, 'static'))
+
+try:
+    cache_cfg = auto_configure_model_caches(ROOT_DIR)
+    if cache_cfg:
+        logger.info(
+            "Model caches: cache_root=%s HF_HOME=%s TORCH_HOME=%s",
+            cache_cfg.cache_root,
+            cache_cfg.hf_home,
+            cache_cfg.torch_home,
+        )
+except Exception as e:
+    logger.warning("Failed to auto-configure model caches: %s", e)
 
 VIDEO_METADATA = load_video_metadata(config.VIDEOS_DIR)
 runtime_evaluation_config = {
@@ -112,6 +125,13 @@ def health_api():
             "visual_provider": config.VISUAL_MODEL_PROVIDER,
             "visual_model": config.VISUAL_MODEL_NAME,
             "visual_truncate_dim": config.VISUAL_TRUNCATE_DIM,
+            "visual_enabled": config.ENABLE_VISUAL_RETRIEVAL,
+            "visual_text_only_model": config.VISUAL_TEXT_ONLY_MODEL,
+            "visual_model_dtype": config.VISUAL_MODEL_DTYPE,
+            "visual_low_cpu_mem_usage": config.VISUAL_LOW_CPU_MEM_USAGE,
+            "visual_stream_safe_load": config.VISUAL_STREAM_SAFE_LOAD,
+            "visual_text_fallback_enabled": config.ENABLE_VISUAL_TEXT_FALLBACK,
+            "visual_min_available_memory_gb": config.VISUAL_MIN_AVAILABLE_MEMORY_GB,
             "dense_text_enabled": config.ENABLE_DENSE_TEXT_RETRIEVAL,
             "text_provider": config.TEXT_MODEL_PROVIDER,
             "text_model": config.TEXT_MODEL_NAME,
@@ -449,4 +469,5 @@ def submit_proxy():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    app.run(host="0.0.0.0", port=5000, debug=debug)

@@ -1,11 +1,17 @@
 import react from "@vitejs/plugin-react";
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@": "/src",
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
+  build: {
+    rollupOptions: {
+      input: "index.html",
     },
   },
   server: {
@@ -18,4 +24,3 @@ export default defineConfig({
     },
   },
 });
-

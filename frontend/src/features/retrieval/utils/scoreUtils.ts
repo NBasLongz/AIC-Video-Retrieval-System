@@ -7,7 +7,7 @@ export function clampScore(score: unknown): number {
 export function normalizeSource(source?: string): string {
   const normalized = source?.toLowerCase();
   if (!normalized) return "Hybrid";
-  if (normalized === "visual" || normalized === "clip") return "Visual";
+  if (normalized === "visual" || normalized === "clip" || normalized === "visual_fallback") return "Visual";
   if (normalized === "ocr") return "OCR";
   if (normalized === "transcript" || normalized === "asr") return "Transcript";
   if (normalized === "caption") return "Caption";

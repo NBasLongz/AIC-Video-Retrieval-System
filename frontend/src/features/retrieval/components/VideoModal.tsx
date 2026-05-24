@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Pin, Play, Send, SkipBack, SkipForward, X } from "lucide-react";
+import { CheckCircle2, Pause, Pin, Play, Send, SkipBack, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { frameToTimestamp, formatTime, timestampToFrame } from "../utils/frameUtils";
 import type { NearbyFrame, RetrievalResult } from "../types/retrieval.types";
@@ -27,6 +27,7 @@ export function VideoModal({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [speed, setSpeed] = useState(1);
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const fps = useMemo(() => Number(item?.raw.fps || 25), [item]);
   const currentTimestamp = useMemo(() => frameToTimestamp(currentFrame, fps), [currentFrame, fps]);
@@ -34,6 +35,7 @@ export function VideoModal({
   useEffect(() => {
     if (!item) return;
     setCurrentFrame(item.frame);
+    setIsPlaying(false);
   }, [item]);
 
   useEffect(() => {
@@ -41,6 +43,29 @@ export function VideoModal({
   }, [speed]);
 
   if (!item) return null;
+
+  const playVideo = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = speed;
+    try {
+      await video.play();
+      setIsPlaying(true);
+    } catch {
+      setIsPlaying(false);
+    }
+  };
+
+  const togglePlayback = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused || video.ended) {
+      await playVideo();
+      return;
+    }
+    video.pause();
+    setIsPlaying(false);
+  };
 
   const seekToFrame = (frame: number) => {
     const nextFrame = Math.max(0, frame);
@@ -56,10 +81,14 @@ export function VideoModal({
   };
 
   const stepFrame = (offset: number) => {
+    videoRef.current?.pause();
+    setIsPlaying(false);
     seekToFrame(currentFrame + offset);
   };
 
   const selectNeighbor = (frame: NearbyFrame) => {
+    videoRef.current?.pause();
+    setIsPlaying(false);
     seekToFrame(frame.frame);
   };
 
@@ -79,31 +108,51 @@ export function VideoModal({
         <div className="grid gap-4 p-4 lg:grid-cols-[1fr_270px]">
           <div className="overflow-hidden rounded-3xl bg-slate-950">
             <div className="relative aspect-video bg-slate-950">
-              <video
-                ref={videoRef}
-                src={item.videoUrl}
-                className="h-full w-full object-contain"
-                controls
-                preload="metadata"
-                onLoadedMetadata={() => seekToFrame(item.frame)}
-                onTimeUpdate={syncFrameFromVideo}
-                onSeeked={syncFrameFromVideo}
-              />
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 text-white">
-                <div className="mb-3 flex items-center justify-center gap-2">
-                  <Button size="icon" onClick={() => stepFrame(-1)} className="pointer-events-auto rounded-full bg-white text-slate-950 hover:bg-slate-100">
-                    <SkipBack size={17} />
-                  </Button>
-                  <Button
-                    onClick={() => videoRef.current?.play()}
-                    className="pointer-events-auto rounded-full bg-white px-5 text-slate-950 hover:bg-slate-100"
-                  >
-                    <Play size={17} fill="currentColor" className="mr-2" /> Play
-                  </Button>
-                  <Button size="icon" onClick={() => stepFrame(1)} className="pointer-events-auto rounded-full bg-white text-slate-950 hover:bg-slate-100">
-                    <SkipForward size={17} />
-                  </Button>
-                </div>
+                <video
+                  ref={videoRef}
+                  src={item.videoUrl}
+                  className="h-full w-full object-contain"
+                  autoPlay
+                  preload="metadata"
+                  onClick={() => void togglePlayback()}
+                  onLoadedMetadata={() => {
+                    seekToFrame(item.frame);
+                    void playVideo();
+                  }}
+                  onTimeUpdate={syncFrameFromVideo}
+                  onSeeked={syncFrameFromVideo}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  onEnded={() => setIsPlaying(false)}
+                />
+                <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/55 to-transparent p-4 text-white">
+                  <div className="mb-3 flex items-center justify-center gap-2">
+                    <Button
+                      size="icon"
+                      onClick={() => stepFrame(-1)}
+                      className="pointer-events-auto rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/35 hover:bg-sky-500"
+                    >
+                      <SkipBack size={17} />
+                    </Button>
+                    <Button
+                      onClick={() => void togglePlayback()}
+                      className="pointer-events-auto rounded-full bg-emerald-500 px-5 text-white shadow-lg ring-2 ring-white/35 hover:bg-emerald-400"
+                    >
+                      {isPlaying ? (
+                        <Pause size={17} fill="currentColor" className="mr-2" />
+                      ) : (
+                        <Play size={17} fill="currentColor" className="mr-2" />
+                      )}
+                      {isPlaying ? "Pause" : "Play"}
+                    </Button>
+                    <Button
+                      size="icon"
+                      onClick={() => stepFrame(1)}
+                      className="pointer-events-auto rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/35 hover:bg-sky-500"
+                    >
+                      <SkipForward size={17} />
+                    </Button>
+                  </div>
                 <div className="flex items-center justify-between text-sm font-black">
                   <span>{formatTime(currentTimestamp)}</span>
                   <span>Current frame {currentFrame}</span>

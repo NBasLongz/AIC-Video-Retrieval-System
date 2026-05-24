@@ -9,6 +9,7 @@ export type RetrievalScores = {
   textDense: number;
   fusion: number;
   rerank?: number;
+  rank?: number;
 };
 
 export type NearbyFrame = {
@@ -53,7 +54,9 @@ export type BackendSearchResult = {
   time_ms?: number;
   fps?: number;
   clip_score?: number;
+  clip_score_raw?: number;
   visual_score?: number;
+  visual_score_raw?: number;
   ocr_score?: number;
   transcript_score?: number;
   caption_score?: number;
@@ -61,6 +64,8 @@ export type BackendSearchResult = {
   text_dense_score?: number;
   fusion_score?: number;
   rerank_score?: number;
+  rank_score?: number;
+  display_score?: number;
   source_type?: string;
   doc_type?: string;
   sources?: string[];

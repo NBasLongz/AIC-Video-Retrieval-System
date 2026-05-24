@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend import config
 from utils.elasticsearch_client import get_elasticsearch_client
-from utils.fusion import legacy_intersection, rrf_fusion
+from utils.fusion import legacy_intersection, result_key, rrf_fusion
 from utils.dense_text_encoder import DenseTextEncoder
 from utils.query_processing import build_query_plan, decompose_query
 from utils.reranker import OptionalReranker
@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 
 _KEYFRAME_MAP_DIR = Path(config.KEYFRAMES_DIR) / "maps"
 DEFAULT_NEIGHBOR_SECONDS = [-5, -3, 0, 3, 5]
+VISUAL_TEXT_FALLBACKS = {
+    "person": ["nguoi", "người", "con nguoi", "con người", "human", "people", "man", "woman", "boy", "girl", "child"],
+    "people": ["nguoi", "người", "con nguoi", "con người", "person", "human", "crowd"],
+    "human": ["nguoi", "người", "person", "people", "man", "woman"],
+    "man": ["nguoi", "người", "person", "human", "male"],
+    "woman": ["nguoi", "người", "person", "human", "female"],
+    "child": ["tre em", "trẻ em", "em be", "em bé", "boy", "girl", "person"],
+    "boy": ["tre em", "trẻ em", "cau be", "cậu bé", "child", "person"],
+    "girl": ["tre em", "trẻ em", "co be", "cô bé", "child", "person"],
+    "walking": ["di bo", "đi bộ", "person", "nguoi", "người"],
+    "street": ["duong", "đường", "pho", "phố"],
+    "car": ["xe", "xe hoi", "xe hơi", "oto", "ô tô"],
+    "bus": ["xe buyt", "xe buýt", "bus"],
+    "motorbike": ["xe may", "xe máy"],
+    "fire": ["chay", "cháy", "lua", "lửa"],
+}
 
 
 @lru_cache(maxsize=2048)
@@ -80,6 +96,7 @@ class VideoRetrievalSystem:
         connections.connect("default", host=config.MILVUS_HOST, port=config.MILVUS_PORT)
         logger.info("Successfully connected to Milvus.")
         self.keyframes_collection = Collection(config.KEYFRAME_COLLECTION_NAME)
+        self.keyframes_collection.load()
         self.collection_vector_dim = self._collection_vector_dim(self.keyframes_collection, "keyframe_vector")
         if self.collection_vector_dim and self.collection_vector_dim != config.VECTOR_DIMENSION:
             raise ValueError(
@@ -126,6 +143,89 @@ class VideoRetrievalSystem:
         except Exception as exc:
             logger.warning("Could not inspect Milvus collection schema: %s", exc)
         return None
+
+    def _can_load_visual_encoder(self) -> bool:
+        if getattr(self.encoder, "_model", None) is not None:
+            return True
+
+        min_available_gb = config.VISUAL_MIN_AVAILABLE_MEMORY_GB
+        if min_available_gb <= 0:
+            return True
+
+        try:
+            import psutil
+
+            available_gb = psutil.virtual_memory().available / (1024**3)
+        except Exception as exc:  # noqa: BLE001 - fail open if psutil is unavailable
+            logger.warning("Could not check memory before visual model load: %s", exc)
+            return True
+
+        if available_gb < min_available_gb:
+            logger.warning(
+                "Dense visual search skipped: available memory %.2f GB is below "
+                "VISUAL_MIN_AVAILABLE_MEMORY_GB=%.2f. Set VISUAL_MIN_AVAILABLE_MEMORY_GB=0 "
+                "to force visual loading, or set ENABLE_VISUAL_RETRIEVAL=false to keep it disabled.",
+                available_gb,
+                min_available_gb,
+            )
+            return False
+
+        return True
+
+    def _visual_fallback_queries(self, query: str) -> list[str]:
+        normalized = query.lower().strip()
+        terms = [query.strip()]
+        tokens = [part.strip(" ,.;:/\\|()[]{}!?\"'").lower() for part in normalized.split()]
+
+        for token in tokens:
+            terms.extend(VISUAL_TEXT_FALLBACKS.get(token, []))
+
+        for keyword, aliases in VISUAL_TEXT_FALLBACKS.items():
+            if keyword in normalized:
+                terms.extend(aliases)
+
+        unique_terms = []
+        seen = set()
+        for term in terms:
+            clean = str(term).strip()
+            if not clean:
+                continue
+            marker = clean.lower()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            unique_terms.append(clean)
+        return unique_terms
+
+    def _visual_text_fallback_search(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        if not config.ENABLE_VISUAL_TEXT_FALLBACK:
+            return []
+
+        queries = self._visual_fallback_queries(query)
+        if not queries:
+            return []
+
+        per_query_limit = max(25, min(config.TEXT_MAX_RESULTS, max_results) // max(1, len(queries)))
+        buckets: dict[tuple[str, int | str], dict[str, Any]] = {}
+        for text_query in queries:
+            for item in self._text_search(text_query, doc_types=None, max_results=per_query_limit):
+                key = result_key(item)
+                if not key[0] or key in buckets:
+                    continue
+                fallback_item = dict(item)
+                fallback_item["visual_fallback"] = True
+                fallback_item["visual_fallback_query"] = text_query
+                fallback_item["visual_score"] = fallback_item.get("text_score", 0)
+                buckets[key] = fallback_item
+
+        results = list(buckets.values())[:max_results]
+        logger.info(
+            "Visual text fallback found %s hits for query=%r expanded_queries=%s",
+            len(results),
+            query,
+            queries,
+        )
+        return results
 
     def _resolve_frame_info(self, video_id: str, keyframe_index: int) -> tuple[float, int]:
         try:
@@ -279,7 +379,18 @@ class VideoRetrievalSystem:
         if not query:
             return []
 
-        query_vector = self.encoder.encode(query)
+        if not config.ENABLE_VISUAL_RETRIEVAL:
+            logger.info("Dense visual search skipped because ENABLE_VISUAL_RETRIEVAL=false.")
+            return []
+
+        if not self._can_load_visual_encoder():
+            return self._visual_text_fallback_search(query, max_results)
+
+        try:
+            query_vector = self.encoder.encode(query)
+        except Exception as exc:
+            logger.error("Dense visual query encoding failed: %s", exc, exc_info=True)
+            return self._visual_text_fallback_search(query, max_results)
         query_dim = int(query_vector.reshape(1, -1).shape[-1])
         expected_dim = self.collection_vector_dim or config.VECTOR_DIMENSION
         if query_dim != expected_dim:
@@ -310,7 +421,7 @@ class VideoRetrievalSystem:
                 video_id = hit.entity.get("video_id")
                 keyframe_index = hit.entity.get("keyframe_index")
                 start_seconds, original_frame = self._resolve_frame_info(video_id, keyframe_index)
-                score = float(hit.distance)
+                raw_score = float(hit.distance)
                 results.append(
                     self._with_video_metadata({
                         "video_id": video_id,
@@ -318,14 +429,46 @@ class VideoRetrievalSystem:
                         "frame_number": original_frame,
                         "start": start_seconds,
                         "start_seconds": start_seconds,
-                        "clip_score": score,
-                        "visual_score": score,
+                        "clip_score": raw_score,
+                        "clip_score_raw": raw_score,
+                        "visual_score": raw_score,
+                        "visual_score_raw": raw_score,
                         "source_type": "visual",
                     })
                 )
 
+        self._normalize_ranked_scores(results, "visual_score_raw", "visual_score")
+        for item in results:
+            item["clip_score"] = item.get("visual_score")
+
         logger.info("Dense visual search found %s keyframes.", len(results))
         return results
+
+    def _normalize_ranked_scores(
+        self,
+        results: list[dict[str, Any]],
+        raw_field: str,
+        normalized_field: str,
+    ) -> None:
+        if not results:
+            return
+
+        raw_scores = []
+        for item in results:
+            try:
+                raw_scores.append(float(item.get(raw_field)))
+            except (TypeError, ValueError):
+                raw_scores.append(0.0)
+
+        best = max(raw_scores)
+        worst = min(raw_scores)
+        span = best - worst
+        for rank, (item, raw_score) in enumerate(zip(results, raw_scores), start=1):
+            if span > 1e-9:
+                normalized = (raw_score - worst) / span
+            else:
+                normalized = 1.0 / rank
+            item[normalized_field] = float(max(0.0, min(1.0, normalized)))
 
     def _text_search(
         self,
@@ -625,6 +768,16 @@ class VideoRetrievalSystem:
             fused,
             top_k=rerank_top_k,
         )
+
+        total = max(1, len(fused) - 1)
+        for rank, item in enumerate(fused):
+            item["rank_score"] = 1.0 if len(fused) == 1 else 1.0 - (rank / total)
+            if "visual" in item.get("sources", []) and item.get("visual_score") is not None:
+                item["display_score"] = item.get("visual_score")
+            elif item.get("rerank_score") is not None:
+                item["display_score"] = item.get("rerank_score")
+            else:
+                item["display_score"] = item["rank_score"]
 
         logger.info(
             "Hybrid search completed. sources=%s fused_results=%s",

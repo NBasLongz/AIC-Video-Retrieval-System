@@ -9,14 +9,23 @@ export function useVisibleResults(
   keyframeLimit: number | "all",
 ) {
   return useMemo(() => {
-    const filtered = results.filter((item) => {
+    const baseFiltered = results.filter((item) => {
       const passVideo = activeVideo === "all" || item.videoId === activeVideo;
       const passScore = item.score >= Number(minScore);
+      return passVideo && passScore;
+    });
+
+    const modeFiltered = baseFiltered.filter((item) => {
       const source = item.source.toLowerCase();
       const passMode = mode === "hybrid" || mode === "audio" || source === mode || source === "hybrid";
-      return passVideo && passScore && passMode;
+      return passMode;
     });
-    if (keyframeLimit === "all") return filtered;
-    return filtered.slice(0, keyframeLimit);
+
+    const visible = modeFiltered.length > 0 || mode === "hybrid" || mode === "audio"
+      ? modeFiltered
+      : baseFiltered;
+
+    if (keyframeLimit === "all") return visible;
+    return visible.slice(0, keyframeLimit);
   }, [activeVideo, keyframeLimit, minScore, mode, results]);
 }

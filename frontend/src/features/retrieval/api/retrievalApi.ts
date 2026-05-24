@@ -29,7 +29,9 @@ function mapBackendResult(item: BackendSearchResult, index: number, ocrHints: st
   const textDense = clampScore(item.text_dense_score ?? sourceScores.text_dense_score);
   const fusion = clampScore(item.fusion_score ?? Math.max(visual, ocr, transcript, textDense));
   const rerank = item.rerank_score === undefined ? undefined : clampScore(item.rerank_score);
-  const score = rerank ?? fusion ?? visual;
+  const rank = item.rank_score === undefined ? undefined : clampScore(item.rank_score);
+  const display = item.display_score === undefined ? undefined : clampScore(item.display_score);
+  const score = display ?? (source === "Visual" ? visual : rerank ?? rank ?? fusion ?? visual);
 
   const ocrText = item.ocr_text || "";
   const ocrMatches = ocrHints
@@ -62,6 +64,7 @@ function mapBackendResult(item: BackendSearchResult, index: number, ocrHints: st
       textDense,
       fusion,
       rerank,
+      rank,
     },
     ocrMatches,
     sources,

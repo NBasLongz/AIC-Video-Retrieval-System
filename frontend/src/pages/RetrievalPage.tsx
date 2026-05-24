@@ -25,14 +25,14 @@ function splitHints(value: string) {
 export function RetrievalPage() {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
-  const [minScore, setMinScore] = useState("0.25");
+  const [minScore, setMinScore] = useState("0.00");
   const [activeVideo, setActiveVideo] = useState("all");
   const [openedFrame, setOpenedFrame] = useState<RetrievalResult | null>(null);
   const [isVideoListCollapsed, setIsVideoListCollapsed] = useState(false);
   const [signals, setSignals] = useState(defaultSignals);
   const [ocrHint, setOcrHint] = useState("");
   const [transcriptHint, setTranscriptHint] = useState("");
-  const [rerank, setRerank] = useState(true);
+  const [rerank, setRerank] = useState(false);
   const [keyframeLimit, setKeyframeLimit] = useState<number | "all">(80);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
 
@@ -86,11 +86,11 @@ export function RetrievalPage() {
   const resetFilters = () => {
     setMode("hybrid");
     setActiveVideo("all");
-    setMinScore("0.25");
+    setMinScore("0.00");
     setSignals(defaultSignals);
     setOcrHint("");
     setTranscriptHint("");
-    setRerank(true);
+    setRerank(false);
     setKeyframeLimit(80);
   };
 

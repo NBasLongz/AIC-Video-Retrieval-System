@@ -26,3 +26,10 @@ frontend/*.tsbuildinfo
 *.log
 .env
 !.env.example
+
+# Local model caches and restored data snapshots
+.aic_cache/
+.hf_cache/
+.torch_cache/
+data_before_zip_restore_*/
+test_ocr_results.png
