@@ -9,7 +9,7 @@ export const retrievalModes: Array<{ id: RetrievalMode; label: string; icon: Luc
   { id: "audio", label: "Audio", icon: Mic },
 ];
 
-export const neighborSeconds = [-5, -3, 0, 3, 5];
+export const neighborSeconds = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
 
 export const defaultSignals = {
   visual: true,

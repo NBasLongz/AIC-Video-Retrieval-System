@@ -1,8 +1,17 @@
 import { CheckCircle2, Pin, Play, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { RetrievalResult } from "../types/retrieval.types";
+import type { RetrievalMode, RetrievalResult } from "../types/retrieval.types";
 import { OcrChips } from "./OcrChips";
 import { ScoreBreakdown } from "./ScoreBreakdown";
+
+function evidenceForMode(item: RetrievalResult, mode: RetrievalMode) {
+  if (mode === "ocr") return item.evidence.ocr || item.evidence.text;
+  if (mode === "transcript" || mode === "audio") return item.evidence.transcript || item.evidence.text;
+  if (mode === "visual") return item.evidence.caption || item.evidence.text || "Visual scene matches the query.";
+  if (item.source === "OCR") return item.evidence.ocr || item.evidence.text;
+  if (item.source === "Transcript") return item.evidence.transcript || item.evidence.text;
+  return item.evidence.caption || item.evidence.ocr || item.evidence.transcript || item.evidence.text || "Visual scene matches the query.";
+}
 
 export function ResultCard({
   item,
@@ -11,6 +20,7 @@ export function ResultCard({
   onPin,
   pinned,
   submitted,
+  mode,
 }: {
   item: RetrievalResult;
   onOpen: (item: RetrievalResult) => void;
@@ -18,8 +28,10 @@ export function ResultCard({
   onPin: (item: RetrievalResult) => void;
   pinned: boolean;
   submitted: boolean;
+  mode: RetrievalMode;
 }) {
-  const evidence = item.evidence.ocr || item.evidence.transcript || item.evidence.caption || item.evidence.text || "Visual scene matches the query.";
+  const evidence = evidenceForMode(item, mode);
+  const showOcrChips = mode === "ocr" || (mode === "hybrid" && item.source === "OCR");
 
   return (
     <div className="group overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:shadow-lg">
@@ -52,8 +64,8 @@ export function ResultCard({
           <span className="shrink-0 rounded-full bg-sky-50 px-2 py-1 text-[11px] font-black text-sky-700">{item.source}</span>
         </div>
 
-        <OcrChips matches={item.ocrMatches} text={item.evidence.ocr} />
-        <ScoreBreakdown scores={item.scores} />
+        {showOcrChips && <OcrChips matches={item.ocrMatches} text={item.evidence.ocr} />}
+        <ScoreBreakdown mode={mode} scores={item.scores} />
 
         <div className="grid grid-cols-3 gap-2">
           <Button onClick={() => onOpen(item)} variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-xs font-black">
@@ -78,4 +90,3 @@ export function ResultCard({
     </div>
   );
 }
-

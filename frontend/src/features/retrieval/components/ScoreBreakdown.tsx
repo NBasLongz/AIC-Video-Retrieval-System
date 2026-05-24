@@ -1,4 +1,4 @@
-import type { RetrievalScores } from "../types/retrieval.types";
+import type { RetrievalMode, RetrievalScores } from "../types/retrieval.types";
 
 function displayValue(value: number | undefined) {
   if (value === undefined || Number.isNaN(value)) return "0.00";
@@ -11,16 +11,21 @@ function barWidth(value: number | undefined) {
   return Math.min(100, safe * 12);
 }
 
-export function ScoreBreakdown({ scores }: { scores: RetrievalScores }) {
-  const rows = [
-    ["V", scores.visual],
-    ["O", scores.ocr],
-    ["T", scores.transcript],
-    ["D", scores.textDense],
-  ] as const;
+export function ScoreBreakdown({ mode, scores }: { mode: RetrievalMode; scores: RetrievalScores }) {
+  const rows = mode === "hybrid"
+    ? ([
+        ["V", scores.visual],
+        ["O", scores.ocr],
+        ["T", scores.transcript],
+      ] as const)
+    : mode === "ocr"
+      ? ([["O", scores.ocr]] as const)
+      : mode === "transcript" || mode === "audio"
+        ? ([["T", scores.transcript]] as const)
+        : ([["V", scores.visual]] as const);
 
   return (
-    <div className="grid grid-cols-4 gap-1">
+    <div className={`grid gap-1 ${rows.length === 1 ? "grid-cols-1" : "grid-cols-3"}`}>
       {rows.map(([label, value]) => (
         <div key={label} className="rounded-lg bg-slate-50 px-2 py-1">
           <div className="mb-1 flex items-center justify-between text-[10px] font-black text-slate-500">

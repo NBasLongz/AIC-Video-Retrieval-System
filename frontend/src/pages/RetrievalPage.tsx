@@ -24,7 +24,7 @@ function splitHints(value: string) {
 
 export function RetrievalPage() {
   const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<RetrievalMode>("hybrid");
+  const [mode, setMode] = useState<RetrievalMode>("visual");
   const [minScore, setMinScore] = useState("0.00");
   const [activeVideo, setActiveVideo] = useState("all");
   const [openedFrame, setOpenedFrame] = useState<RetrievalResult | null>(null);
@@ -84,7 +84,7 @@ export function RetrievalPage() {
   );
 
   const resetFilters = () => {
-    setMode("hybrid");
+    setMode("visual");
     setActiveVideo("all");
     setMinScore("0.00");
     setSignals(defaultSignals);
@@ -185,6 +185,7 @@ export function RetrievalPage() {
               onOpen={setOpenedFrame}
               onSubmit={(item) => submitCurrent(item)}
               onPin={togglePin}
+              mode={mode}
             />
           </section>
         </main>
@@ -198,6 +199,7 @@ export function RetrievalPage() {
         onPin={togglePin}
         pinned={openedFrame ? pinnedIds.has(openedFrame.id) : false}
         submitted={openedFrame ? submittedIds.has(`${openedFrame.videoId}-${openedFrame.frame}`) : false}
+        mode={mode}
       />
     </div>
   );

@@ -16,14 +16,12 @@ export function buildSearchPayload(input: BuildPayloadInput): SearchPayload {
   const payload: SearchPayload = {
     fusion: "rrf",
     rerank_top_k: 0,
-    neighbor_seconds: [-5, -3, 0, 3, 5],
+    neighbor_seconds: [-4, -3, -2, -1, 0, 1, 2, 3, 4],
     explain: true,
   };
 
   if (input.mode === "visual") {
     if (query) payload.description = query;
-    if (ocr) payload.ocr = ocr;
-    if (transcript) payload.transcript = transcript;
     return payload;
   }
 
@@ -46,8 +44,8 @@ export function buildSearchPayload(input: BuildPayloadInput): SearchPayload {
   }
 
   if (query && input.signals.visual) payload.description = query;
-  if ((ocr || query) && input.signals.ocr) payload.ocr = ocr || query;
-  if ((transcript || query) && input.signals.transcript) payload.transcript = transcript || query;
+  if (ocr && input.signals.ocr) payload.ocr = ocr;
+  if (transcript && input.signals.transcript) payload.transcript = transcript;
   return payload;
 }
 

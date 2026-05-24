@@ -46,7 +46,7 @@ export function VideoList({
             </div>
             <div>
               <h2 className="text-sm font-black text-slate-950">Videos</h2>
-              <p className="text-[11px] text-slate-500">Grouped frames</p>
+              <p className="text-[11px] text-slate-500">Grouped matches</p>
             </div>
           </div>
           <button
@@ -64,7 +64,7 @@ export function VideoList({
             activeVideo === "all" ? "bg-sky-600 text-white" : "bg-slate-50 text-slate-700 hover:bg-sky-50"
           }`}
         >
-          All videos / {totalFrames} frames
+          All videos / {totalFrames} matches
         </button>
 
         <div className="max-h-[calc(100vh-210px)] space-y-2 overflow-y-auto pr-1">

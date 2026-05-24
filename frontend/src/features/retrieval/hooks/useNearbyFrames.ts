@@ -1,28 +1,23 @@
 import { useMemo } from "react";
-import { timestampToFrame } from "../utils/frameUtils";
+import { keyframeUrl, timestampToFrame } from "../utils/frameUtils";
 import type { NearbyFrame, RetrievalResult } from "../types/retrieval.types";
 
-export function useNearbyFrames(openedFrame: RetrievalResult | null, offsets: number[] = [-5, -3, 0, 3, 5]): NearbyFrame[] {
+export function useNearbyFrames(openedFrame: RetrievalResult | null, offsets: number[] = [-4, -3, -2, -1, 0, 1, 2, 3, 4]): NearbyFrame[] {
   return useMemo(() => {
     if (!openedFrame) return [];
-    if (openedFrame.raw.neighbors?.length) {
-      return openedFrame.raw.neighbors.map((neighbor) => ({
-        id: `${neighbor.video_id}-${neighbor.time_ms}`,
-        videoId: neighbor.video_id,
-        timestamp: neighbor.timestamp,
-        frame: neighbor.frame_number,
-        label: neighbor.label === "current" ? "Current" : neighbor.label,
-      }));
-    }
     const fps = Number(openedFrame.raw.fps || 25);
     return offsets.map((offset) => {
       const timestamp = Math.max(0, openedFrame.timestamp + offset);
+      const keyframeIndex = Math.max(0, openedFrame.keyframeIndex + offset);
+      const frame = timestampToFrame(timestamp, fps);
       return {
-        id: `${openedFrame.videoId}-${timestamp}`,
+        id: `${openedFrame.videoId}-${keyframeIndex}`,
         videoId: openedFrame.videoId,
+        keyframeIndex,
         timestamp,
-        frame: timestampToFrame(timestamp, fps),
-        label: offset === 0 ? "Current" : `${offset > 0 ? "+" : ""}${offset}s`,
+        frame,
+        label: offset === 0 ? "Current" : `${offset > 0 ? "+" : ""}${offset}`,
+        thumbnailUrl: keyframeUrl(openedFrame.videoId, keyframeIndex),
       };
     });
   }, [offsets, openedFrame]);

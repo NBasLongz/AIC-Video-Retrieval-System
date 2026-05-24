@@ -1,4 +1,4 @@
-import type { RetrievalResult } from "../types/retrieval.types";
+import type { RetrievalMode, RetrievalResult } from "../types/retrieval.types";
 import { ResultCard } from "./ResultCard";
 
 export function ResultGrid({
@@ -8,6 +8,7 @@ export function ResultGrid({
   onOpen,
   onSubmit,
   onPin,
+  mode,
 }: {
   results: RetrievalResult[];
   pinnedIds: Set<string>;
@@ -15,6 +16,7 @@ export function ResultGrid({
   onOpen: (item: RetrievalResult) => void;
   onSubmit: (item: RetrievalResult) => void;
   onPin: (item: RetrievalResult) => void;
+  mode: RetrievalMode;
 }) {
   if (!results.length) {
     return (
@@ -35,9 +37,9 @@ export function ResultGrid({
           onPin={onPin}
           pinned={pinnedIds.has(item.id)}
           submitted={submittedIds.has(`${item.videoId}-${item.frame}`)}
+          mode={mode}
         />
       ))}
     </div>
   );
 }
-

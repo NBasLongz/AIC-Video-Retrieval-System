@@ -15,6 +15,7 @@ export type RetrievalScores = {
 export type NearbyFrame = {
   id: string;
   videoId: string;
+  keyframeIndex?: number;
   frame: number;
   timestamp: number;
   label: string;

@@ -64,13 +64,14 @@ export function SearchHeader({
   const sliderMax = Math.max(40, totalResults);
   const sliderValue = keyframeLimit === "all" ? sliderMax : Math.min(keyframeLimit, sliderMax);
   const limitLabel = keyframeLimit === "all" || totalResults <= Number(keyframeLimit) ? "All" : String(keyframeLimit);
+  const modeLabel = mode === "visual" ? "Visual only" : mode === "ocr" ? "OCR only" : mode === "transcript" ? "Transcript only" : mode === "audio" ? "Audio only" : "Hybrid";
 
   return (
     <header className="shrink-0 rounded-2xl bg-white/95 p-3 shadow-sm ring-1 ring-slate-200/70 backdrop-blur-xl">
       <div className="mb-2 grid gap-2 xl:grid-cols-[minmax(300px,1fr)_auto] xl:items-center">
         <div>
           <h1 className="text-xl font-black tracking-tight text-slate-950 lg:text-2xl">AIC Video Retrieval</h1>
-          <p className="text-xs text-slate-500">Hybrid visual + OCR + transcript search, rerank top candidates, then submit the exact frame.</p>
+          <p className="text-xs text-slate-500">Search the selected signal, inspect nearby frames, then submit the exact frame.</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <EvaluationConfigBar />
@@ -85,7 +86,7 @@ export function SearchHeader({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && onSearch()}
-            placeholder="Search scene, OCR text, transcript, or audio transcript..."
+            placeholder={mode === "visual" || mode === "hybrid" ? "Search visual scene in English..." : mode === "ocr" ? "Search OCR text..." : "Search transcript text..."}
             className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-sm font-medium outline-none focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
           />
         </div>
@@ -99,14 +100,16 @@ export function SearchHeader({
         </Button>
       </div>
 
-      <QuickAssistBar
-        ocrHint={ocrHint}
-        setOcrHint={setOcrHint}
-        transcriptHint={transcriptHint}
-        setTranscriptHint={setTranscriptHint}
-        rerank={rerank}
-        setRerank={setRerank}
-      />
+      {mode === "hybrid" && (
+        <QuickAssistBar
+          ocrHint={ocrHint}
+          setOcrHint={setOcrHint}
+          transcriptHint={transcriptHint}
+          setTranscriptHint={setTranscriptHint}
+          rerank={rerank}
+          setRerank={setRerank}
+        />
+      )}
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
         <span className="flex items-center gap-1.5 font-black text-slate-700">
@@ -123,9 +126,15 @@ export function SearchHeader({
         />
         <span className="rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-black text-sky-700">{minScore}</span>
         <span className="hidden text-slate-300 sm:inline">/</span>
-        <SignalToggle checked={signals.visual} onChange={() => setSignals((current) => ({ ...current, visual: !current.visual }))} label="Visual" />
-        <SignalToggle checked={signals.ocr} onChange={() => setSignals((current) => ({ ...current, ocr: !current.ocr }))} label="OCR" />
-        <SignalToggle checked={signals.transcript} onChange={() => setSignals((current) => ({ ...current, transcript: !current.transcript }))} label="Transcript" />
+        {mode === "hybrid" ? (
+          <>
+            <SignalToggle checked={signals.visual} onChange={() => setSignals((current) => ({ ...current, visual: !current.visual }))} label="Visual" />
+            <SignalToggle checked={signals.ocr} onChange={() => setSignals((current) => ({ ...current, ocr: !current.ocr }))} label="OCR" />
+            <SignalToggle checked={signals.transcript} onChange={() => setSignals((current) => ({ ...current, transcript: !current.transcript }))} label="Transcript" />
+          </>
+        ) : (
+          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-black text-emerald-700">{modeLabel}</span>
+        )}
         <span className="hidden text-slate-300 sm:inline">/</span>
         <span className="font-semibold text-slate-500">{visibleCount}/{totalResults} frames shown</span>
         <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 font-black text-emerald-700">Submitted {submittedCount}</span>

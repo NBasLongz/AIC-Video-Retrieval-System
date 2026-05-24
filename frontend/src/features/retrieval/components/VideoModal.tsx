@@ -2,10 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Pause, Pin, Play, Send, SkipBack, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { frameToTimestamp, formatTime, timestampToFrame } from "../utils/frameUtils";
-import type { NearbyFrame, RetrievalResult } from "../types/retrieval.types";
+import type { NearbyFrame, RetrievalMode, RetrievalResult } from "../types/retrieval.types";
 import { NearbyFrames } from "./NearbyFrames";
 import { OcrChips } from "./OcrChips";
 import { ScoreBreakdown } from "./ScoreBreakdown";
+
+function evidenceForMode(item: RetrievalResult, mode: RetrievalMode) {
+  if (mode === "ocr") return item.evidence.ocr || item.evidence.text;
+  if (mode === "transcript" || mode === "audio") return item.evidence.transcript || item.evidence.text;
+  if (mode === "visual") return item.evidence.caption || item.evidence.text || "Visual scene matched.";
+  if (item.source === "OCR") return item.evidence.ocr || item.evidence.text;
+  if (item.source === "Transcript") return item.evidence.transcript || item.evidence.text;
+  return item.evidence.caption || item.evidence.ocr || item.evidence.transcript || item.evidence.text || "Visual scene matched.";
+}
 
 export function VideoModal({
   item,
@@ -15,6 +24,7 @@ export function VideoModal({
   onPin,
   pinned,
   submitted,
+  mode,
 }: {
   item: RetrievalResult | null;
   neighbors: NearbyFrame[];
@@ -23,6 +33,7 @@ export function VideoModal({
   onPin: (item: RetrievalResult) => void;
   pinned: boolean;
   submitted: boolean;
+  mode: RetrievalMode;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [speed, setSpeed] = useState(1);
@@ -43,6 +54,8 @@ export function VideoModal({
   }, [speed]);
 
   if (!item) return null;
+  const evidence = evidenceForMode(item, mode);
+  const showOcrChips = mode === "ocr" || (mode === "hybrid" && item.source === "OCR");
 
   const playVideo = async () => {
     const video = videoRef.current;
@@ -93,9 +106,9 @@ export function VideoModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/82 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-[min(96vw,1280px)] overflow-hidden rounded-3xl bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-100 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/82 p-2 backdrop-blur-sm">
+      <div className="flex max-h-[96vh] w-full max-w-[min(98vw,1600px)] flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
           <div>
             <p className="text-xs font-black uppercase tracking-wide text-sky-600">Video Preview</p>
             <h2 className="text-xl font-black text-slate-950">{item.videoId}</h2>
@@ -105,80 +118,89 @@ export function VideoModal({
           </button>
         </div>
 
-        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_270px]">
-          <div className="overflow-hidden rounded-3xl bg-slate-950">
-            <div className="relative aspect-video bg-slate-950">
-                <video
-                  ref={videoRef}
-                  src={item.videoUrl}
-                  className="h-full w-full object-contain"
-                  autoPlay
-                  preload="metadata"
-                  onClick={() => void togglePlayback()}
-                  onLoadedMetadata={() => {
-                    seekToFrame(item.frame);
-                    void playVideo();
-                  }}
-                  onTimeUpdate={syncFrameFromVideo}
-                  onSeeked={syncFrameFromVideo}
-                  onPlay={() => setIsPlaying(true)}
-                  onPause={() => setIsPlaying(false)}
-                  onEnded={() => setIsPlaying(false)}
-                />
-                <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/55 to-transparent p-4 text-white">
-                  <div className="mb-3 flex items-center justify-center gap-2">
-                    <Button
-                      size="icon"
-                      onClick={() => stepFrame(-1)}
-                      className="pointer-events-auto rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/35 hover:bg-sky-500"
-                    >
-                      <SkipBack size={17} />
-                    </Button>
-                    <Button
-                      onClick={() => void togglePlayback()}
-                      className="pointer-events-auto rounded-full bg-emerald-500 px-5 text-white shadow-lg ring-2 ring-white/35 hover:bg-emerald-400"
-                    >
-                      {isPlaying ? (
-                        <Pause size={17} fill="currentColor" className="mr-2" />
-                      ) : (
-                        <Play size={17} fill="currentColor" className="mr-2" />
-                      )}
-                      {isPlaying ? "Pause" : "Play"}
-                    </Button>
-                    <Button
-                      size="icon"
-                      onClick={() => stepFrame(1)}
-                      className="pointer-events-auto rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/35 hover:bg-sky-500"
-                    >
-                      <SkipForward size={17} />
-                    </Button>
-                  </div>
+        <div className="grid min-h-0 flex-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-3xl bg-slate-950">
+            <div className="relative min-h-0 flex-1 bg-slate-950">
+              <video
+                ref={videoRef}
+                src={item.videoUrl}
+                className="h-full w-full object-contain"
+                autoPlay
+                preload="metadata"
+                onClick={() => void togglePlayback()}
+                onLoadedMetadata={() => {
+                  seekToFrame(item.frame);
+                  void playVideo();
+                }}
+                onTimeUpdate={syncFrameFromVideo}
+                onSeeked={syncFrameFromVideo}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onEnded={() => setIsPlaying(false)}
+              />
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
                 <div className="flex items-center justify-between text-sm font-black">
                   <span>{formatTime(currentTimestamp)}</span>
                   <span>Current frame {currentFrame}</span>
                 </div>
               </div>
             </div>
+            <div className="flex shrink-0 items-center justify-center gap-2 bg-slate-950 px-4 py-2">
+              <Button
+                size="icon"
+                onClick={() => stepFrame(-1)}
+                className="rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/20 hover:bg-sky-500"
+              >
+                <SkipBack size={17} />
+              </Button>
+              <Button
+                onClick={() => void togglePlayback()}
+                className="rounded-full bg-emerald-500 px-6 text-white shadow-lg ring-2 ring-white/20 hover:bg-emerald-400"
+              >
+                {isPlaying ? (
+                  <Pause size={17} fill="currentColor" className="mr-2" />
+                ) : (
+                  <Play size={17} fill="currentColor" className="mr-2" />
+                )}
+                {isPlaying ? "Pause" : "Play"}
+              </Button>
+              <Button
+                size="icon"
+                onClick={() => stepFrame(1)}
+                className="rounded-full bg-sky-600 text-white shadow-lg ring-2 ring-white/20 hover:bg-sky-500"
+              >
+                <SkipForward size={17} />
+              </Button>
+            </div>
+            <div className="shrink-0 border-t border-white/10 bg-slate-900 px-3 py-2">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <p className="text-xs font-black uppercase text-slate-300">Nearby keyframes</p>
+                <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-300 ring-1 ring-white/10">same video</span>
+              </div>
+              <NearbyFrames frames={neighbors} currentFrame={currentFrame} onSelect={selectNeighbor} />
+            </div>
           </div>
 
-          <aside className="space-y-3">
+          <aside className="min-h-0 space-y-3 overflow-y-auto pr-1">
             <div className="rounded-2xl bg-sky-50 p-4">
               <p className="text-xs font-black uppercase text-sky-600">Current frame</p>
               <p className="mt-1 text-2xl font-black text-slate-950">{currentFrame}</p>
               <p className="text-sm text-slate-600">Score {item.score.toFixed(3)} / {item.source}</p>
               <div className="mt-3">
-                <ScoreBreakdown scores={item.scores} />
+                <ScoreBreakdown mode={mode} scores={item.scores} />
               </div>
             </div>
 
             <div className="rounded-2xl bg-amber-50 p-4">
               <p className="mb-2 text-xs font-black uppercase text-amber-700">Evidence</p>
               <p className="text-sm leading-6 text-slate-700">
-                {item.evidence.ocr || item.evidence.transcript || item.evidence.caption || item.evidence.text || "Visual scene matched."}
+                {evidence}
               </p>
-              <div className="mt-2">
-                <OcrChips matches={item.ocrMatches} text={item.evidence.ocr} />
-              </div>
+              {showOcrChips && (
+                <div className="mt-2">
+                  <OcrChips matches={item.ocrMatches} text={item.evidence.ocr} />
+                </div>
+              )}
             </div>
 
             <div className="rounded-2xl bg-slate-50 p-4">
@@ -196,14 +218,6 @@ export function VideoModal({
                   </button>
                 ))}
               </div>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 p-4">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-xs font-black uppercase text-slate-500">Nearby frames</p>
-                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-500 ring-1 ring-slate-200">same video</span>
-              </div>
-              <NearbyFrames frames={neighbors} currentFrame={currentFrame} onSelect={selectNeighbor} />
             </div>
 
             <div className="grid grid-cols-[48px_1fr] gap-2">
