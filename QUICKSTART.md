@@ -16,6 +16,8 @@ Recommended:
 - NVIDIA GPU and CUDA for faster preprocessing/search warm-up
 - At least 30 GB free space on the drive used for model cache and data
 
+
+
 Check versions:
 
 ```powershell
