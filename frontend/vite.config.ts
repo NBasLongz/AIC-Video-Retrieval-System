@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  publicDir: false,
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

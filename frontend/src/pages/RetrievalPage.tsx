@@ -2,8 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Keyboard, Pin, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { defaultSignals, neighborSeconds } from "@/features/retrieval/constants/retrieval.constants";
-import { useNearbyFrames } from "@/features/retrieval/hooks/useNearbyFrames";
+import { defaultSignals } from "@/features/retrieval/constants/retrieval.constants";
 import { useRetrievalSearch } from "@/features/retrieval/hooks/useRetrievalSearch";
 import { useSubmitFrame } from "@/features/retrieval/hooks/useSubmitFrame";
 import { useVideoGroups } from "@/features/retrieval/hooks/useVideoGroups";
@@ -41,7 +40,6 @@ export function RetrievalPage() {
 
   const visibleResults = useVisibleResults(results, activeVideo, mode, minScore, keyframeLimit);
   const videoGroups = useVideoGroups(results.filter((item) => item.score >= Number(minScore)));
-  const nearbyFrames = useNearbyFrames(openedFrame, neighborSeconds);
 
   const pinnedResults = useMemo(
     () => results.filter((item) => pinnedIds.has(item.id)).slice(0, 4),
@@ -193,7 +191,6 @@ export function RetrievalPage() {
 
       <VideoModal
         item={openedFrame}
-        neighbors={nearbyFrames}
         onClose={() => setOpenedFrame(null)}
         onSubmit={submitCurrent}
         onPin={togglePin}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Pause, Pin, Play, Send, SkipBack, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { frameToTimestamp, formatTime, timestampToFrame } from "../utils/frameUtils";
+import { frameToTimestamp, formatTime, keyframeUrl, timestampToFrame } from "../utils/frameUtils";
 import type { NearbyFrame, RetrievalMode, RetrievalResult } from "../types/retrieval.types";
 import { NearbyFrames } from "./NearbyFrames";
 import { OcrChips } from "./OcrChips";
@@ -16,9 +16,10 @@ function evidenceForMode(item: RetrievalResult, mode: RetrievalMode) {
   return item.evidence.caption || item.evidence.ocr || item.evidence.transcript || item.evidence.text || "Visual scene matched.";
 }
 
+const liveNeighborOffsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
+
 export function VideoModal({
   item,
-  neighbors,
   onClose,
   onSubmit,
   onPin,
@@ -27,7 +28,6 @@ export function VideoModal({
   mode,
 }: {
   item: RetrievalResult | null;
-  neighbors: NearbyFrame[];
   onClose: () => void;
   onSubmit: (item: RetrievalResult, frameOverride?: number) => void;
   onPin: (item: RetrievalResult) => void;
@@ -38,14 +38,18 @@ export function VideoModal({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [speed, setSpeed] = useState(1);
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [videoTime, setVideoTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
   const fps = useMemo(() => Number(item?.raw.fps || 25), [item]);
-  const currentTimestamp = useMemo(() => frameToTimestamp(currentFrame, fps), [currentFrame, fps]);
+  const currentTimestamp = useMemo(() => frameToTimestamp(currentFrame || item?.frame || 0, fps), [currentFrame, fps, item]);
 
   useEffect(() => {
     if (!item) return;
     setCurrentFrame(item.frame);
+    setVideoTime(item.timestamp);
+    setDuration(0);
     setIsPlaying(false);
   }, [item]);
 
@@ -56,6 +60,25 @@ export function VideoModal({
   if (!item) return null;
   const evidence = evidenceForMode(item, mode);
   const showOcrChips = mode === "ocr" || (mode === "hybrid" && item.source === "OCR");
+  const rangeMax = Math.max(duration, videoTime, currentTimestamp, item.timestamp, 1);
+  const progressValue = Math.min(videoTime || item.timestamp || currentTimestamp, rangeMax);
+  const currentKeyframeIndex = Math.max(0, item.keyframeIndex + Math.round(currentTimestamp - item.timestamp));
+  const liveNeighbors = liveNeighborOffsets
+    .map((offset) => ({ offset, keyframeIndex: currentKeyframeIndex + offset }))
+    .filter(({ keyframeIndex }) => keyframeIndex >= 0)
+    .map(({ offset, keyframeIndex }): NearbyFrame => {
+      const timestamp = Math.max(0, item.timestamp + keyframeIndex - item.keyframeIndex);
+      const frame = timestampToFrame(timestamp, fps);
+      return {
+        id: `${item.videoId}-${keyframeIndex}-${offset}`,
+        videoId: item.videoId,
+        keyframeIndex,
+        timestamp,
+        frame,
+        label: offset === 0 ? "Current" : `${offset > 0 ? "+" : ""}${offset}`,
+        thumbnailUrl: keyframeUrl(item.videoId, keyframeIndex),
+      };
+    });
 
   const playVideo = async () => {
     const video = videoRef.current;
@@ -82,15 +105,28 @@ export function VideoModal({
 
   const seekToFrame = (frame: number) => {
     const nextFrame = Math.max(0, frame);
+    const timestamp = frameToTimestamp(nextFrame, fps);
     setCurrentFrame(nextFrame);
+    setVideoTime(timestamp);
     if (videoRef.current) {
-      videoRef.current.currentTime = frameToTimestamp(nextFrame, fps);
+      videoRef.current.currentTime = timestamp;
+    }
+  };
+
+  const seekToTime = (timestamp: number) => {
+    const safeTimestamp = Math.max(0, Math.min(timestamp, rangeMax));
+    setVideoTime(safeTimestamp);
+    setCurrentFrame(timestampToFrame(safeTimestamp, fps));
+    if (videoRef.current) {
+      videoRef.current.currentTime = safeTimestamp;
     }
   };
 
   const syncFrameFromVideo = () => {
     if (!videoRef.current) return;
-    setCurrentFrame(timestampToFrame(videoRef.current.currentTime, fps));
+    const timestamp = videoRef.current.currentTime;
+    setVideoTime(timestamp);
+    setCurrentFrame(timestampToFrame(timestamp, fps));
   };
 
   const stepFrame = (offset: number) => {
@@ -129,6 +165,9 @@ export function VideoModal({
                 preload="metadata"
                 onClick={() => void togglePlayback()}
                 onLoadedMetadata={() => {
+                  if (videoRef.current && Number.isFinite(videoRef.current.duration)) {
+                    setDuration(videoRef.current.duration);
+                  }
                   seekToFrame(item.frame);
                   void playVideo();
                 }}
@@ -145,7 +184,22 @@ export function VideoModal({
                 </div>
               </div>
             </div>
-            <div className="flex shrink-0 items-center justify-center gap-2 bg-slate-950 px-4 py-2">
+            <div className="shrink-0 bg-slate-950 px-4 py-2">
+              <div className="mb-2 grid grid-cols-[42px_minmax(0,1fr)_42px] items-center gap-2 text-[11px] font-black text-slate-300">
+                <span>{formatTime(progressValue)}</span>
+                <input
+                  type="range"
+                  min="0"
+                  max={rangeMax}
+                  step={1 / Math.max(1, fps)}
+                  value={progressValue}
+                  onChange={(event) => seekToTime(Number(event.target.value))}
+                  className="w-full accent-sky-500"
+                  aria-label="Seek video"
+                />
+                <span className="text-right">{formatTime(duration || rangeMax)}</span>
+              </div>
+              <div className="flex items-center justify-center gap-2">
               <Button
                 size="icon"
                 onClick={() => stepFrame(-1)}
@@ -171,13 +225,14 @@ export function VideoModal({
               >
                 <SkipForward size={17} />
               </Button>
+              </div>
             </div>
             <div className="shrink-0 border-t border-white/10 bg-slate-900 px-3 py-2">
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <p className="text-xs font-black uppercase text-slate-300">Nearby keyframes</p>
                 <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-black text-slate-300 ring-1 ring-white/10">same video</span>
               </div>
-              <NearbyFrames frames={neighbors} currentFrame={currentFrame} onSelect={selectNeighbor} />
+              <NearbyFrames frames={liveNeighbors} currentFrame={currentFrame} currentKeyframeIndex={currentKeyframeIndex} onSelect={selectNeighbor} />
             </div>
           </div>
 

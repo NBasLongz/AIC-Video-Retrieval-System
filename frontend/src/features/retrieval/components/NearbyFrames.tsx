@@ -4,16 +4,20 @@ import { keyframeUrl } from "../utils/frameUtils";
 export function NearbyFrames({
   frames,
   currentFrame,
+  currentKeyframeIndex,
   onSelect,
 }: {
   frames: NearbyFrame[];
   currentFrame: number;
+  currentKeyframeIndex?: number;
   onSelect: (frame: NearbyFrame) => void;
 }) {
   return (
     <div className="grid grid-cols-9 gap-1.5">
       {frames.map((frame) => {
-        const active = Math.abs(frame.frame - currentFrame) <= 1;
+        const active = currentKeyframeIndex !== undefined && frame.keyframeIndex !== undefined
+          ? frame.keyframeIndex === currentKeyframeIndex
+          : Math.abs(frame.frame - currentFrame) <= 1;
         const thumbnailUrl = frame.thumbnailUrl || keyframeUrl(frame.videoId, frame.keyframeIndex ?? frame.frame);
         return (
           <button

@@ -161,7 +161,23 @@ def search_api():
     logger.info(f"Received search request: {query_data}")
 
     try:
-        if query_data.get("fusion") == "intersection":
+        description = (query_data.get("description") or "").strip()
+        has_text_signal = any((query_data.get(key) or "").strip() for key in ("ocr", "transcript", "audio", "caption"))
+        visual_only = description and not has_text_signal and query_data.get("fusion") != "intersection"
+
+        if visual_only:
+            results = search_system.clip_search(
+                description,
+                max_results=config.VISUAL_MAX_RESULTS,
+            )
+            total = max(1, len(results) - 1)
+            for rank, item in enumerate(results):
+                item["sources"] = ["visual"]
+                item["rank_score"] = 1.0 if len(results) == 1 else 1.0 - (rank / total)
+                item["display_score"] = item.get("visual_score", item["rank_score"])
+                search_system._attach_submit_time(item)
+                search_system._attach_neighbors(item, query_data.get("neighbor_seconds"))
+        elif query_data.get("fusion") == "intersection":
             description = query_data.get("description", "")
             result_sets = []
             if description:
